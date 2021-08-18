@@ -1,0 +1,55 @@
+---
+title: "Create db functions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Work out how to best access data from sqlite database using R
+
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(here)
+
+
+# create database connection
+con <- DBI::dbConnect(RSQLite::SQLite(), dbname = here("data", "data.sqlite"))
+
+# create a reference to the data source
+data_tbl <- tbl(con, "data")
+```
+
+## Create individual data objects for each of the search terms
+
+Instead of processing this data on the fly, read it in at the start of the 
+session. Use `write_rds` to write rds files uncompressed.
+
+```{r}
+genes <- data_tbl %>% distinct(gene_name) %>% pull(gene_name)
+individuals <- data_tbl %>% distinct(individual) %>% pull(individual)
+populations <- data_tbl %>% distinct(population) %>% pull(population)
+sexes <- data_tbl %>% distinct(sex) %>% pull(sex)
+metrics <- data_tbl %>% distinct(metric) %>% pull(metric)
+
+write_rds(genes, here("data", "genes.rds"))
+write_rds(individuals, here("data", "individuals.rds"))
+write_rds(populations, here("data", "populations.rds"))
+write_rds(sexes, here("data", "sexes.rds"))
+write_rds(metrics, here("data", "metrics.rds"))
+```
+
+## Can we create links to repository samples?
+
+```{r}
+data_tbl %>% 
+  filter(metric == "CPM" & gene_name == "PTEN") %>% 
+  collect() %>% 
+  mutate(individual = paste0('<a href="https://www.coriell.org/0/Sections/Search/Sample_Detail.aspx?Ref=', individual, '&Product=DNA">', individual, '</a>')) %>% 
+  as.data.frame() %>% 
+  select(individual) %>% 
+  DT::datatable(escape = FALSE, )
+```
+

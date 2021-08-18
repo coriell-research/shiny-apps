@@ -1,0 +1,39 @@
+---
+title: "Create small dataset for dev server"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in the full dataset
+
+```{r}
+library(data.table)
+library(here)
+
+
+dt <- readRDS(here("data", "data.rds"))
+```
+
+## Get the most popular genes (and some others)
+
+source ![popular genes](https://www.nature.com/articles/d41586-017-07291-9)
+
+```{r}
+popular_genes <- c("TP53", "TNF", "EGFR", "VEGFA", "APOE", "IL6",
+                   "TGFB1", "MTHFR", "ESR1", "AKT1", "CDK9", "CDK7",
+                   "CYP2D6", "PTEN", "HBB", "CD4", "GRB2", "BRCA1",
+                   "UBC", "ACE")
+
+data_small <- dt[gene_name %in% popular_genes]
+```
+
+## Write small data out for dev server
+
+```{r}
+saveRDS(data_small, here("data/data-small.rds"))
+```
+
+

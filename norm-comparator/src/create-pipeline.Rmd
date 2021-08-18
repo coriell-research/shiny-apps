@@ -1,0 +1,344 @@
+---
+title: "Pipeline"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read in data and create `SummarizedExperiment` objects
+
+A SummarizedExperiment object will serve as input for the App. There most be 
+a slot for raw "counts" and a grouping factor named "group" in colData. Other
+colData variables are allowed but "group" must be present.
+
+```{r}
+library(here)
+library(tidyverse)
+
+
+hh1_counts <- readRDS(here("data", "hh1-gene-mat.rds"))
+hh1_annotation <- read.csv(here("doc", "hh1-annotation.csv"))
+hh1_col_data <- hh1_annotation[, c("treatment", "time_hr")]
+hh1_col_data$time_hr <- factor(as.numeric(hh1_col_data$time_hr))
+rownames(hh1_col_data) <- hh1_annotation$sample_name
+
+# match column ordering
+hh1_counts <- hh1_counts[, rownames(hh1_col_data)]
+```
+
+## Create SummarizedExperiment class (use HH1 experiment as example)
+
+The App will only accept `SummarizedExperiment` data types!
+
+```{r}
+library(SummarizedExperiment)
+
+
+raw <- SummarizedExperiment(assays = list(counts = hh1_counts), colData = hh1_col_data)
+raw$group <- factor(str_c(raw$treatment, raw$time_hr, sep = "."))
+
+# save for testing
+saveRDS(raw, here("data", "raw.rds"))
+```
+
+## Filtering
+
+For now, allow filtering through the `filterByExpr` function. 
+
+```{r}
+# simulate user input
+group_data <- raw$group
+min_count <- 10
+min_total_count <- 15
+min_prop <- 0.7
+
+# view dimension before filtering
+dim(raw)
+
+# filter the counts
+keep <- edgeR::filterByExpr(raw, 
+                            group = group_data,
+                            min.count = min_count,
+                            min.total.count = min_total_count,
+                            min.prop = min_prop)
+
+filt <- raw[keep, ]
+dim(filt)
+```
+
+## Visualize distributions before and after
+
+```{r}
+# simulate user selecting a sample
+user_sample <- colnames(raw)[[1]]
+
+# Create plotting function
+plot_distribution <- function(se, sample_name, n_bins = 30, pseudocount = 0) {
+  assays(se)[["counts"]][, user_sample] %>% 
+    enframe(name = NULL, value = "x") %>% 
+    mutate(x = x + pseudocount) %>% 
+    ggplot(aes(x)) +
+    geom_histogram(bins = n_bins, fill = "steelblue", color = "black") +
+    theme_light() +
+    scale_x_log10() +
+    labs(x = "Number of Reads")
+}
+
+# example showing before/after filtering
+plot_distribution(raw, user_sample) + ggtitle(paste(user_sample, "Distribution of Raw Counts"))
+plot_distribution(filt, user_sample) + ggtitle(paste(user_sample, "Distribution of Filtered Counts"))
+
+# maybe show summary stats too -------------------------------------------------
+dist_summary <- function(se, sample_name, pseudocount = 0) {
+  summary(assays(se)[["counts"]][, user_sample] + pseudocount)
+}
+
+dist_summary(raw, user_sample)
+dist_summary(filt, user_sample)
+```
+
+## Normalize the filtered dataset
+
+```{r}
+# user defined pseudocount for log2 transformation
+pseudocount <- 2
+
+# Total count ------------------------------------------------------------------
+tc <- edgeR::cpm(assays(filt)[["counts"]])
+tc_lcpm <- edgeR::cpm(assays(filt)[["counts"]], log = TRUE, prior.count = pseudocount)
+
+assays(filt)[["TC"]] <- tc
+assays(filt)[["logTC"]] <- tc_lcpm
+
+# edgeR ------------------------------------------------------------------------
+percentile <- 0.7
+reference_col <- NULL
+
+tmm <- edgeR::calcNormFactors(filt, method = "TMM", refColumn = reference_col)
+uq <- edgeR::calcNormFactors(filt, method = "upperquartile", p = percentile)
+rle <- edgeR::calcNormFactors(filt, method = "RLE")
+
+tmm_cpm <- edgeR::cpm(tmm)
+uq_cpm <- edgeR::cpm(uq)
+rle_cpm <- edgeR::cpm(rle)
+tmm_lcpm <- edgeR::cpm(tmm, log = TRUE, prior.count = pseudocount)
+uq_lcpm <- edgeR::cpm(uq, log = TRUE, prior.count = pseudocount)
+rle_lcpm <- edgeR::cpm(rle, log = TRUE, prior.count = pseudocount)
+
+assays(filt)[["TMM"]] <- tmm_cpm
+assays(filt)[["UQ"]] <- uq_cpm
+assays(filt)[["RLE"]] <- rle_cpm
+assays(filt)[["logTMM"]] <- tmm_lcpm
+assays(filt)[["logUQ"]] <- uq_lcpm
+assays(filt)[["logRLE"]] <- rle_lcpm
+
+# QSmooth ----------------------------------------------------------------------
+qs <- qsmooth::qsmooth(filt, group_factor = filt$group)
+qs_cpm <- edgeR::cpm(qsmooth::qsmoothData(qs))
+qs_lcpm <- edgeR::cpm(qsmooth::qsmoothData(qs), log = TRUE, prior.count = pseudocount)
+
+assays(filt)[["QS"]] <- qs_cpm
+assays(filt)[["logQS"]] <- qs_lcpm
+
+# RUVg -------------------------------------------------------------------------
+# This would be a user supplied vector
+control_genes <- c("ACTB", "B2M", "C1orf43", "CHMP2A", "GAPDH", "GPI", "GUSB", 
+                   "HPRT1", "HSP90AB1", "PPIA", "PSMB2", "PSMB4", "RAB7A", "REEP5", 
+                   "RPL13A", "RPLP0", "SNRPD3", "TFRC", "UBC", "VCP", "VPS29")
+K = 3
+
+ruv_set <- RUVSeq::RUVg(as.matrix(assays(filt)[["counts"]]), control_genes, k = K)
+ruv_cpm <- edgeR::cpm(ruv_set$normalizedCounts)
+ruv_lcpm <- edgeR::cpm(ruv_set$normalizedCounts, log = TRUE, prior.count = pseudocount)
+
+assays(filt)[["RUVg"]] <- ruv_cpm
+assays(filt)[["logRUVg"]] <- ruv_lcpm
+```
+
+## Create boxplots of the normalized counts
+
+```{r}
+plot_rle <- function(assay_name, fill_by = "group", outlier_shape = NA, outlier_alpha = 0.5) {
+  median_expr <- apply(assays(filt)[[assay_name]], 1, median)
+  rle_data <- assays(filt)[[assay_name]] - median_expr
+  
+  plot_df <- rle_data %>% 
+    dplyr::as_tibble(rownames = "feature_id") %>% 
+    pivot_longer(-feature_id, names_to = "sample_name", values_to = "RLE") %>% 
+    left_join(as_tibble(colData(filt), rownames = "sample_name"), 
+              by = "sample_name")
+  
+  plot_df %>% 
+    ggplot(aes(x = sample_name, y = RLE, fill = .data[[fill_by]])) +
+    geom_boxplot(outlier.shape = outlier_shape, outlier.alpha = outlier_alpha) +
+    theme_light() +
+    geom_hline(yintercept = median(plot_df$RLE, na.rm = TRUE), 
+               linetype = 2,
+               color = "red") +
+    labs(title = paste(assay_name),
+         x = NULL,
+         y = "RLE") +
+    theme(axis.text.x = element_blank())
+}
+
+# ------------------------------------------------------------------------------
+plot_rle("logTMM", "treatment", outlier_shape = 19)
+plot_rle("logRLE", "treatment", outlier_shape = 19)
+plot_rle("logUQ", "treatment", outlier_shape = 19)
+plot_rle("logQS", "treatment", outlier_shape = 19)
+plot_rle("logRUVg", "treatment", outlier_shape = 19)
+plot_rle("logTC", "treatment", outlier_shape = 19)
+```
+
+## Sample vs Sample Scatter Plots
+
+```{r}
+# simulate user sample selections
+sample_1 <- "dmso.96.3"
+sample_2 <- "dmso.96.1"
+
+# ------------------------------------------------------------------------------
+plot_scatter <- function(assay_name, sample1, sample2, pt_alpha = 0.5, log_scale = TRUE) {
+  plot_df <- assays(filt)[[assay_name]] %>% 
+    as_tibble(rownames = "feature_id") %>% 
+    select(feature_id, sample1, sample2)
+  
+  if (log_scale) {
+    plot_df %>%
+      ggplot(aes(x = .data[[sample1]], y = .data[[sample2]])) +
+      geom_point(alpha = pt_alpha) +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = 2) +
+      scale_x_log10() +
+      scale_y_log10() +
+      theme_light() +
+      labs(title = paste(assay_name))
+  } else {
+    plot_df %>%
+      ggplot(aes(x = .data[[sample1]], y = .data[[sample2]])) +
+      geom_point(alpha = pt_alpha) +
+      geom_abline(slope = 1, intercept = 0, color = "red", linetype = 2) +
+      theme_light() +
+      labs(title = paste(assay_name))
+  }
+}
+
+# test -------------------------------------------------------------------------
+plot_scatter("TMM", sample_1, sample_2, log_scale = TRUE, pt_alpha = 0.05)
+plot_scatter("RLE", sample_1, sample_2, log_scale = TRUE, pt_alpha = 0.5)
+plot_scatter("UQ", sample_1, sample_2, log_scale = TRUE, pt_alpha = 0.5)
+plot_scatter("QS", sample_1, sample_2, log_scale = TRUE, pt_alpha = 0.5)
+plot_scatter("RUVg", sample_1, sample_2, log_scale = TRUE, pt_alpha = 0.5)
+plot_scatter("TC", sample_1, sample_2, log_scale = TRUE, pt_alpha = 0.5)
+```
+
+## Smear Plots
+
+```{r}
+plot_smear <- function(assay_name, sample1, sample2, smooth = FALSE, loess = FALSE) {
+  X <- assays(filt)[[assay_name]][, c(sample1)]
+  Y <- assays(filt)[[assay_name]][, c(sample2)]
+  edgeR::maPlot(X, 
+                Y, 
+                normalize = FALSE,
+                smooth.scatter = smooth,
+                lowess = loess,
+                main = paste(assay_name, "-", sample1, "vs.", sample2), 
+                ylab = paste0("log2(", sample2, " / ", sample1, ")"))
+  abline(a = 0, b = 0, lty = 2)
+}
+
+# ------------------------------------------------------------------------------
+plot_smear("TMM", sample_1, sample_2, loess = TRUE)
+plot_smear("RLE", sample_1, sample_2, loess = TRUE)
+plot_smear("UQ", sample_1, sample_2, loess = TRUE)
+plot_smear("QS", sample_1, sample_2, loess = TRUE)
+plot_smear("RUVg", sample_1, sample_2, loess = TRUE)
+plot_smear("TC", sample_1, sample_2, loess = TRUE)
+```
+
+## PCA plots
+
+```{r}
+plot_pca <- function(assay_name, 
+                     scale_data = TRUE, 
+                     center_data = TRUE, 
+                     component1 = "PC1", 
+                     component2 = "PC2", 
+                     color_by = "group",
+                     shape_by = NULL) {
+  pca <- prcomp(t(assays(filt)[[assay_name]]), center = center_data, scale. = scale_data)
+  pca_df <- as_tibble(pca$x, rownames = "sample_name") %>% 
+    left_join(as_tibble(colData(filt), rownames = "sample_name"), by = "sample_name")
+  
+  if (is.null(shape_by)) {
+    pca_df %>% 
+      ggplot(aes(x = .data[[component1]], y = .data[[component2]], color = .data[[color_by]])) +
+      geom_point(size = 3) +
+      geom_hline(yintercept = 0, linetype = 2) +
+      geom_vline(xintercept = 0, linetype = 2) +
+      theme_light() +
+      labs(title = paste(assay_name))
+  } else {
+    pca_df %>% 
+      ggplot(aes(x = .data[[component1]], y = .data[[component2]], color = .data[[color_by]], shape = .data[[shape_by]])) +
+      geom_point(size = 3) +
+      geom_hline(yintercept = 0, linetype = 2) +
+      geom_vline(xintercept = 0, linetype = 2) +
+      theme_light() +
+      labs(title = paste(assay_name))
+  }
+}
+
+# ------------------------------------------------------------------------------
+plot_pca("logTMM", color_by = "treatment", shape_by = "time_hr")
+plot_pca("logRLE", color_by = "treatment", shape_by = "time_hr")
+plot_pca("logUQ", color_by = "treatment", shape_by = "time_hr")
+plot_pca("logQS", color_by = "treatment", shape_by = "time_hr")
+plot_pca("logRUVg", color_by = "treatment", shape_by = "time_hr")
+plot_pca("logTC", color_by = "treatment", shape_by = "time_hr")
+```
+
+## Correlation plots
+
+```{r}
+library(corrplot)
+
+
+plot_cor <- function(se, assay_name, samples, viz_method) {
+  cor_data <- cor(assays(se)[[assay_name]][, samples])
+  corrplot::corrplot(
+    cor_data,
+    method = viz_method,
+    type = "lower", 
+    col = viridis::viridis(100), 
+    outline = TRUE,
+    tl.col = "black",
+    tl.srt = 45,
+    diag = FALSE)
+}
+
+plot_cor(filt, "TMM", colnames(filt)[c(2, 4, 6, 8, 10)], "circle")
+```
+
+## Heatmap on most variable genes
+
+```{r}
+plot_heatmap <- function(se, assay_name, samples, n_features, cd_rows, cd_cols, cd_method) {
+  mat <- assays(se)[[assay_name]]
+  row_vars <- matrixStats::rowVars(mat)
+  var_order <- order(row_vars, decreasing = TRUE)
+  var_mat <- mat[head(var_order, n_features), samples]
+  pheatmap::pheatmap(var_mat, 
+                     scale = "row",
+                     color = colorRampPalette(c("dodgerblue3", "grey99", "firebrick3"))(50),
+                     show_rownames = FALSE,
+                     clustering_distance_rows = cd_rows,
+                     clustering_distance_cols = cd_cols,
+                     clustering_method = cd_method)
+}
+  
+plot_heatmap(filt, "logTMM", colnames(filt)[1:10], 1000, "correlation", "correlation", "ward.D2")  
+```
+

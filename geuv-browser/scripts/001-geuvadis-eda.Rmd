@@ -1,0 +1,472 @@
+---
+title: "Download and Perform EDA on GEUV Data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+## Get Data from Array Express
+
+Download data and annotation information. 
+
+```{r}
+library(tidyverse)
+library(here)
+
+
+sample_info_url <- "https://www.ebi.ac.uk/arrayexpress/files/E-GEUV-3/E-GEUV-3.sdrf.txt"  # sample information for ALL sequenced samples (E-GEUV-3)
+gene_count_url <- "https://www.ebi.ac.uk/arrayexpress/files/E-GEUV-1/GD660.GeneQuantCount.txt.gz"
+gene_rpkm_url <- "https://www.ebi.ac.uk/arrayexpress/files/E-GEUV-1/GD660.GeneQuantRPKM.txt.gz"
+transcript_count_url <- "https://www.ebi.ac.uk/arrayexpress/files/E-GEUV-1/GD660.TrQuantCount.txt.gz"
+transcript_rpkm_url <- "https://www.ebi.ac.uk/arrayexpress/files/E-GEUV-1/GD660.TrQuantRPKM.txt.gz"
+gencode_annot_url = "ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_12/gencode.v12.annotation.gtf.gz"
+expr_atlas_tpm_url <- "https://www.ebi.ac.uk/gxa/experiments-content/E-GEUV-1/resources/ExperimentDownloadSupplier.RnaSeqBaseline/tpms.tsv"
+expr_atlas_fpkm_url <- "https://www.ebi.ac.uk/gxa/experiments-content/E-GEUV-1/resources/ExperimentDownloadSupplier.RnaSeqBaseline/fpkms.tsv"
+expr_atlas_meta_url <- "https://www.ebi.ac.uk/gxa/experiments-content/E-GEUV-1/resources/ExperimentDesignFile.Baseline/experiment-design"
+
+sample_info_file <- here("data","E-GEUV-3.sdrf.txt")
+gene_count_file <- here("data", "GD660.GeneQuantCount.txt.gz")
+gene_rpkm_file <- here("data", "GD660.GeneQuantRPKM.txt.gz")
+transcript_count_file <- here("data", "GD660.TrQuantCount.txt.gz")
+transcript_rpkm_file <- here("data", "GD660.TrQuantRPKM.txt.gz")
+gencode_annot_file <- here("data", "gencode.v12.annotation.gtf.gz")
+expr_atlas_tpm_file <- here("data", "tpms.tsv")
+expr_atlas_fpkm_file <- here("data", "fpkms.tsv")
+expr_atlas_meta_file <- here("data", "experiment-design.tsv")
+
+if (!file.exists(sample_info_file)) download.file(sample_info_url, sample_info_file)
+if (!file.exists(gene_count_file)) download.file(gene_count_url, gene_count_file)
+if (!file.exists(gene_rpkm_file)) download.file(gene_rpkm_url, gene_rpkm_file)
+if (!file.exists(transcript_count_file)) download.file(transcript_count_url, transcript_count_file)
+if (!file.exists(transcript_rpkm_file)) download.file(transcript_rpkm_url, transcript_rpkm_file)
+if (!file.exists(gencode_annot_file)) download.file(gencode_annot_url, gencode_annot_file)
+if (!file.exists(expr_atlas_tpm_file)) download.file(expr_atlas_tpm_url, expr_atlas_tpm_file)
+if (!file.exists(expr_atlas_fpkm_file)) download.file(expr_atlas_fpkm_url, expr_atlas_fpkm_file)
+if (!file.exists(expr_atlas_meta_file)) download.file(expr_atlas_meta_url, expr_atlas_meta_file)
+```
+
+## Load data into R
+
+Load in the TPM. FPKM, and raw counts matrix. 
+
+```{r}
+tpms <- read_tsv(expr_atlas_tpm_file, skip = 4)
+fpkms <- read_tsv(expr_atlas_fpkm_file, skip = 4)
+atlas_metadata <- read_tsv(expr_atlas_meta_file)
+
+sample_info <- read_tsv(sample_info_file)
+gene_counts <- read_tsv(gene_count_file)
+gencode_annot <- as.data.frame(rtracklayer::import(gencode_annot_file))
+```
+
+## Explore/clean sample information
+
+```{r}
+clean_sample_info <- sample_info %>% 
+  janitor::clean_names() %>% 
+  filter(comment_quality_control_passed == "1",
+         !str_detect(assay_name, "\\.MI_")) %>% 
+  select(sample_id = assay_name,
+         source = source_name,
+         population = characteristics_population,
+         center = performer
+         ) %>% 
+  distinct()
+
+# join in sex information from atlas metadata
+clean_atlas_data <- atlas_metadata %>% 
+  select(source = `Sample Characteristic[individual]`,
+         sex = `Sample Characteristic[sex]`,
+         ancestry = `Factor Value[ancestry category]`)
+
+metadata <- clean_sample_info %>% 
+  left_join(clean_atlas_data, by = "source") %>% 
+  mutate(source_center = str_c(source, center, sep = "."))
+
+# some data was processed twice at a given lab - these counts should be summed
+metadata %>% count(source_center, sort = TRUE)
+metadata %>% count(source, sort = TRUE)
+```
+
+## Normalize the raw counts
+
+### Collapse technical replicates performed within each lab
+
+```{r}
+library(edgeR)
+
+
+# Extract the raw counts from the GEUVADIS data --------------------------------
+raw_counts <- gene_counts %>%
+  select(-c("TargetID", "Chr", "Coord")) %>% 
+  column_to_rownames(var = "Gene_Symbol")
+
+# get samples that were repeated in a single sequencing center ----------------- 
+tech_names <- colnames(raw_counts) %>% 
+  enframe(name = NULL, value = "sample_id") %>% 
+  left_join(metadata, by = "sample_id") %>% 
+  pull(source_center)
+
+# rename raw counts from assay to sample_id.lab names
+colnames(raw_counts) <- tech_names
+
+# sum the samples performed in the same sequencing center ----------------------
+count_mat <- sumTechReps(raw_counts)
+dim(count_mat) # collapsed 5 samples
+```
+
+### Extract sample annotation information
+
+```{r}
+samples <- colnames(count_mat) %>% 
+  enframe(name = NULL, value = "source_center") %>%  
+  left_join(y = {
+    metadata %>%                # need to eliminate one-to-many mapping assay -> source center now that they are collapsed
+      select(source_center, 
+             center,
+             sex,
+             ancestry) %>% 
+      distinct()
+    }, 
+    by = "source_center") %>%
+  mutate(center = factor(center),
+         sex = factor(sex),
+         ancestry = factor(ancestry)) %>%
+  separate(source_center, 
+           into = c("individual", "center2"), 
+           sep = "\\.",
+           remove = FALSE) %>%
+  mutate(individual = factor(individual)) %>% 
+  select(-center2) %>% 
+  column_to_rownames(var = "source_center")
+
+# save sample information
+write_rds(samples, here("results", "rds-files", "samples.rds"))
+
+head(samples)
+```
+
+### Breakdown of samples and sequencing centers
+
+```{r}
+metadata %>% 
+  dplyr::count(center, population) %>% 
+  ggplot(aes(x = center, y = n, fill = population)) +
+  geom_col(position = "dodge") +
+  theme_light() +
+  labs(title = "Number of Samples Processed per Laboratory",
+       x = NULL,
+       y = "Count")
+```
+
+### Extract gene-level information
+
+```{r}
+genes <- count_mat %>%
+  as_tibble(rownames = "gene_id") %>%
+  select(gene_id) %>%
+  left_join(
+    y = {
+      gencode_annot %>%
+        filter(type == "gene") %>%
+        select(gene_id, gene_name, seqnames, start, end, width, strand, gene_type)
+    },
+    by = "gene_id"
+  ) %>% 
+  column_to_rownames(var = "gene_id")
+```
+
+### Read data into edgeR
+
+```{r}
+# Check to see if data is properly aligned
+all(rownames(genes) == rownames(count_mat))
+all(colnames(count_mat) == rownames(samples))
+
+# create integer values from raw summed counts
+count_mat <- round(count_mat)
+
+# read into edgeR -- each unique sample is a group
+y <- DGEList(counts = count_mat,
+             samples = samples,
+             group = samples$individual,
+             genes = genes,
+             remove.zeros = TRUE)
+```
+
+### Calculate all EdgeR normalization values
+
+by_group below indicates averaging the normed counts for each individual.
+
+```{r eval=FALSE, include=FALSE}
+# write out data for all normalization methods ---------------------------------
+for (m in c("TMM", "RLE", "upperquartile")) {
+  normed <- calcNormFactors(y, method = m)
+  
+  x.cpms <- cpm(normed)
+  x.lcpms <- cpm(normed, log = TRUE)
+  x.rpkms <- rpkm(normed, gene.length = "width")
+  x.lrpkms <- rpkm(normed, log = TRUE, gene.length = "width")
+  x.cpms_by_group <- cpmByGroup(normed)
+  x.lcpms_by_group <- cpmByGroup(normed, log = TRUE)
+  x.rpkms_by_group <- rpkmByGroup(normed, gene.length = "width")
+  x.lrpkms_by_group <- rpkmByGroup(normed, log = TRUE, gene.length = "width")
+  
+  write_rds(x.cpms, here("results", "rds-files", paste0(m, "-cpms.rds")))
+  write_rds(x.lcpms, here("results", "rds-files", paste0(m, "-lcpms.rds")))
+  write_rds(x.rpkms, here("results", "rds-files", paste0(m, "-rpkms.rds")))
+  write_rds(x.lrpkms, here("results", "rds-files", paste0(m, "-lrpkms.rds")))
+  write_rds(x.cpms_by_group, here("results", "rds-files", paste0(m, "-cpms_by_group.rds")))
+  write_rds(x.lcpms_by_group, here("results", "rds-files", paste0(m, "-lcpms_by_group.rds")))
+  write_rds(x.rpkms_by_group, here("results", "rds-files", paste0(m, "-rpkms_by_group.rds")))
+  write_rds(x.lrpkms_by_group, here("results", "rds-files", paste0(m, "-lrpkms_by_group.rds")))
+}
+```
+
+### Proceed with TMM for rest of EDA
+
+```{r}
+# normalize with TMM for remainder of code
+y <- calcNormFactors(y, method = "TMM")
+
+# calculate normalized counts --------------------------------------------------
+cpms <- cpm(y)
+lcpms <- cpm(y, log = TRUE)
+cpms_by_group <- cpmByGroup(y)
+lcpms_by_group <- cpmByGroup(y, log = TRUE)
+```
+
+## Load data into DESEq2 for VST transformation
+
+```{r}
+library(DESeq2)
+
+
+# import the pre-filtered count data no design
+dds <- DESeqDataSetFromMatrix(countData = y$counts,
+                              colData = samples,
+                              design = ~individual)
+dds <- estimateSizeFactors(dds)
+
+# normalize across all samples - blind to coefficients
+vsd <- vst(dds, nsub = 10000, blind = TRUE)
+vsd_mat <- assay(vsd)
+
+write_rds(vsd_mat, here("results", "rds-files", "vst.rds"))
+```
+
+## Plot TMM normalized logCPMs
+
+```{r}
+library(patchwork)
+library(factoextra)
+
+
+pca_lcpms <- prcomp(t(lcpms), center = TRUE, scale. = TRUE)
+ind_lcpms <- get_pca_ind(pca_lcpms)
+
+ind_coord_lcpms <- ind_lcpms$coord %>% 
+  as_tibble(rownames = "source_center") %>% 
+  left_join(as_tibble(samples, rownames = "source_center"),
+            by = "source_center")
+
+fviz_eig(pca_lcpms, addlabels = TRUE)
+
+# color by population
+pca_lcpms_pop <- ind_coord_lcpms %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = ancestry)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set2") +
+  theme_light() +
+  labs(title = "By Ancestry",
+       x = "PC 1",
+       y = "PC 2")
+
+# color by sequencing center
+pca_lcpms_center <- ind_coord_lcpms %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = center)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_light() +
+  labs(title = "By Sequencing Center",
+       x = "PC 1",
+       y = "PC 2")
+
+(pca_lcpms_pop | pca_lcpms_center) +
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "TMM Normalized logCPMs") +
+  ggsave(here("results", "figures", "pca-lcpms.png"),
+         width = 18,
+         height = 8)
+```
+
+### Group by sample and re-plot
+
+```{r}
+pca_lcpms_by_group <- prcomp(t(lcpms_by_group),
+                             center = TRUE,
+                             scale. = TRUE)
+ind_lcpms_by_group <- get_pca_ind(pca_lcpms_by_group)
+
+ind_coord_lcpms_by_group <- ind_lcpms_by_group$coord %>% 
+  as_tibble(rownames = "individual") %>% 
+  left_join(y = {
+    samples %>% 
+      select(individual, center, sex, ancestry) %>% 
+      distinct()
+     }, 
+    by = "individual")
+
+ind_coord_lcpms_by_group %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = ancestry, shape = sex)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set2") +
+  theme_light() +
+  labs(title = "Average TMM Normalized logCPMs",
+       x = "PC 1",
+       y = "PC 2") +
+  ggsave(here("results", "figures", "pca-lcpms-by_group.png"),
+         width = 8,
+         height = 5)
+```
+
+## PCA on VST normalized log counts
+
+```{r}
+pca_vsd <- prcomp(t(vsd_mat), center = TRUE, scale. = TRUE)
+ind_vsd <- get_pca_ind(pca_vsd)
+
+ind_coord_vsd <- ind_vsd$coord %>% 
+  as_tibble(rownames = "source_center") %>% 
+  left_join(as_tibble(samples, rownames = "source_center"),
+            by = "source_center")
+
+fviz_eig(pca_vsd, addlabels = TRUE)
+
+# color by population
+pca_vsd_pop <- ind_coord_vsd %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = ancestry)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set2") +
+  theme_light() +
+  labs(title = "By Ancestry",
+       x = "PC 1",
+       y = "PC 2")
+
+# color by sequencing center
+pca_vsd_center <- ind_coord_vsd %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = center)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Dark2") +
+  theme_light() +
+  labs(title = "By Sequencing Center",
+       x = "PC 1",
+       y = "PC 2")
+
+(pca_vsd_pop | pca_vsd_center) +
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "VST Normalized Counts") +
+  ggsave(here("results", "figures", "pca-vst.png"),
+         width = 18,
+         height = 8)
+```
+
+## PCA on TPMS
+
+The data from Array Express is already grouped per individual
+
+```{r}
+colnames(tpms) <- colnames(tpms) %>% str_remove("^.*, ") 
+
+tpm_mat <- tpms %>% 
+  select(-`Gene Name`) %>% 
+  column_to_rownames(var = "Gene ID")
+
+# replace NAs in matrix with 0s
+tpm_mat[is.na(tpm_mat)] <- 0
+
+# PCA on TPMs
+pca_tpm <- prcomp(t(tpm_mat), center = TRUE, scale. = TRUE)
+ind_tpm <- get_pca_ind(pca_tpm)
+
+ind_coord_tpm <- ind_tpm$coord %>% 
+  as_tibble(rownames = "individual") %>% 
+  left_join(y = {
+    samples %>% 
+      select(individual, center, sex, ancestry) %>% 
+      distinct()
+     }, 
+    by = "individual")
+
+fviz_eig(pca_tpm, addlabels = TRUE)
+
+ind_coord_tpm %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = ancestry, shape = sex)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set2") +
+  theme_light() +
+  labs(title = "PCA on Upperquartile Normalized TPMs",
+       x = "PC 1",
+       y = "PC 2") +
+  ggsave(here("results", "figures", "tpms-by_group.png"),
+         width = 8,
+         height = 5)
+```
+
+## PCA on Upperquartile normalized FPKMs
+
+```{r}
+colnames(fpkms) <- colnames(fpkms) %>% str_remove("^.*, ") 
+
+fpkm_mat <- fpkms %>% 
+  select(-`Gene Name`) %>% 
+  column_to_rownames(var = "Gene ID")
+
+# replace NAs in matrix with 0s
+fpkm_mat[is.na(fpkm_mat)] <- 0
+
+# PCA on TPMs
+pca_fpkm <- prcomp(t(fpkm_mat), center = TRUE, scale. = TRUE)
+ind_fpkm <- get_pca_ind(pca_fpkm)
+
+ind_coord_fpkm <- ind_fpkm$coord %>% 
+  as_tibble(rownames = "individual") %>% 
+  left_join(y = {
+    samples %>% 
+      select(individual, center, sex, ancestry) %>% 
+      distinct()
+     }, 
+    by = "individual")
+
+fviz_eig(pca_fpkm, addlabels = TRUE)
+
+ind_coord_fpkm %>% 
+  ggplot(aes(x = Dim.1, y = Dim.2, color = ancestry, shape = sex)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  geom_vline(xintercept = 0, linetype = 3) +
+  geom_point(size = 3) +
+  scale_color_brewer(palette = "Set2") +
+  theme_light() +
+  labs(title = "PCA on Upperquartile Normalized FPKMs",
+       x = "PC 1",
+       y = "PC 2") +
+  ggsave(here("results", "figures", "fpkms-by_group.png"),
+         width = 8,
+         height = 5)
+```

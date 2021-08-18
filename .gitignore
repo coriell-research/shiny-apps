@@ -35,7 +35,9 @@ vignettes/*.pdf
 # Shiny token, see https://shiny.rstudio.com/articles/shinyapps.html
 rsconnect/
 
+# PROJECT SPECIFIC DIRECTORIES AND FILES
 # ----
 */data
 */doc
 */results
+nhgri-app/src/*

@@ -1,0 +1,262 @@
+---
+title: "Format Datasets for Expression Browser"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+## Read in datasets
+
+The 'by_group' files are the average of the normalized data for each individual 
+LCL. Similar to how the TPM and FPKM data is displayed in the Expression
+Atlas browser.
+
+```{r}
+library(tidyverse)
+library(here)
+
+
+rle_cpms_by_group <- read_rds(here("results", "rds-files", "RLE-cpms_by_group.rds"))
+rle_rpkms_by_group <- read_rds(here("results", "rds-files", "RLE-rpkms_by_group.rds"))
+tmm_cpms_by_group <- read_rds(here("results", "rds-files", "TMM-cpms_by_group.rds"))
+tmm_rpkms_by_group <- read_rds(here("results", "rds-files", "TMM-rpkms_by_group.rds"))
+uq_cpms_by_group <- read_rds(here("results", "rds-files", "upperquartile-cpms_by_group.rds"))
+uq_rpkms_by_group <- read_rds(here("results", "rds-files", "upperquartile-rpkms_by_group.rds"))
+
+# reserve the log counts for if we need them
+# rle_lcpms_by_group <- read_rds(here("results", "rds-files", "RLE-lcpms_by_group.rds"))
+# rle_lrpkms_by_group <- read_rds(here("results", "rds-files", "RLE-lrpkms_by_group.rds"))
+# tmm_lcpms_by_group <- read_rds(here("results", "rds-files", "TMM-lcpms_by_group.rds"))
+# tmm_lrpkms_by_group <- read_rds(here("results", "rds-files", "TMM-lrpkms_by_group.rds"))
+# uq_lcpms_by_group <- read_rds(here("results", "rds-files", "upperquartile-lcpms_by_group.rds"))
+# uq_lrpkms_by_group <- read_rds(here("results", "rds-files", "upperquartile-lrpkms_by_group.rds"))
+
+# combine into list to then map over
+data_list <- list("RLE_CPM" = rle_cpms_by_group,
+                  # "RLE_logCPM" = rle_lcpms_by_group,
+                  "RLE_RPKM" = rle_rpkms_by_group,
+                  # "RLE_logRPKM" = rle_lrpkms_by_group,
+                  "TMM_CPM" = tmm_cpms_by_group,
+                  # "TMM_logCPM" = tmm_lcpms_by_group,
+                  "TMM_RPKM" = tmm_rpkms_by_group,
+                  # "TMM_logRPKM" = tmm_lrpkms_by_group,
+                  "UpperQuartile_CPM" = uq_cpms_by_group,
+                  # "UpperQuartile_logCPM" = uq_lcpms_by_group,
+                  "UpperQuartile_RPKM" = uq_rpkms_by_group
+                  # "UpperQuartile_logRPKM" = uq_lrpkms_by_group)
+)
+```
+
+### Read in TPM, VST, and FPKM data from Array Expression browser
+
+Downloaded from expression browser. Find URL in first analysis Rmd file.
+
+```{r}
+# read in tpm, fpkm, and vst data separately -- they need different processing
+vsd <- read_rds(here("results", "rds-files", "vst.rds"))
+tpms <- read_tsv(here("data", "tpms.tsv"), skip = 4)
+fpkms <- read_tsv(here("data", "fpkms.tsv"), skip = 4)
+```
+
+### Read in Gene information from GTF file
+
+Original GEUVADIS data was generated against GENCODE v12 (Ensembl GrCh37). 
+
+```{r}
+gencode_annot_file <- here("data", "gencode.v12.annotation.gtf.gz")
+gtf <- as.data.frame(rtracklayer::import(gencode_annot_file))
+genes <- gtf[gtf$type == "gene", c("gene_id", "gene_name", "seqnames", "start", "end", "width", "strand", "gene_type")]
+cds <- gtf[gtf$type == "gene" & gtf$gene_type == "protein_coding", ]
+```
+
+## Coerce individual level data to single dataframe
+
+```{r}
+# create function that pivots data longer for each dataset
+mat_to_df = function(mat, value) {
+  mat %>% 
+    as_tibble(rownames = "gene_id") %>% 
+    pivot_longer(-gene_id, names_to = "individual", values_to = value)
+}
+
+# pivot all matrices longer and combine into single list
+dfs <- map2(data_list, names(data_list), mat_to_df)
+```
+
+### Check to see if all contain same information
+
+```{r eval=FALSE, include=FALSE}
+# check if all have same dimensions
+map(dfs, dim)
+
+# check if all genes are in the same order in each dataframe
+gene_cols <- map(dfs, pluck, 1)
+for (c in utils::combn(1:length(dfs), 2, simplify = FALSE)) {
+  i = c[[1]]
+  j = c[[2]]
+  print(all(gene_cols[[i]] == gene_cols[[j]]))
+}
+
+# check if all individual ids are in the same order
+ind_cols <- map(dfs, pluck, 2)
+for (c in utils::combn(1:length(dfs), 2, simplify = FALSE)) {
+  i = c[[1]]
+  j = c[[2]]
+  print(all(ind_cols[[i]] == ind_cols[[j]]))
+}
+```
+
+### Bind all together
+
+```{r}
+# since everything is in same order and the dimensions are the same, bind instead of join
+df <- bind_cols(dfs) %>% 
+  select(gene_id = gene_id...1,
+         individual = individual...2,
+         starts_with("RLE"),
+         starts_with("TMM"),
+         starts_with("UpperQuartile"))
+
+head(df)
+```
+
+## Read in VST data and pivot longer
+
+This dataset is still at the source-level level and need to be averaged per 
+gene and sample. Use `data.table` for faster grouping/aggregating operations. I
+think dplyr will take ages and use too much memory.
+
+```{r}
+library(data.table)
+
+# TODO: this takes too long -- modify later
+dt <- vsd %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  pivot_longer(-gene_id, names_to = "source_center", values_to = "VST") %>% 
+  separate(source_center, into = c("individual", "center"), sep = "\\.") %>% 
+  select(-center) %>% 
+  as.data.table()
+
+setkeyv(dt, cols = c("individual", "gene_id"))
+vst_long <- dt[, .(VST = mean(VST, na.rm = TRUE)), by = .(individual, gene_id)]
+```
+
+## Join the VST data onto the full dataframe
+
+```{r}
+vst_long <- as_tibble(vst_long)
+
+df <- df %>% 
+  left_join(vst_long, by = c("individual", "gene_id"))
+```
+
+## Clean TPM and FPKM data
+
+```{r}
+# tpm data ---------------------------------------------------------------------
+colnames(tpms) <- colnames(tpms) %>% str_remove("^.*, ")
+
+tpm_mat <- tpms %>% 
+  select(-`Gene Name`) %>% 
+  column_to_rownames(var = "Gene ID")
+
+# pivot the TPM data longer
+tpm_long <- tpm_mat %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  pivot_longer(-gene_id, names_to = "individual", values_to = "TPM")
+
+# FPKM data --------------------------------------------------------------------
+colnames(fpkms) <- colnames(fpkms) %>% str_remove("^.*, ")
+
+fpkm_mat <- fpkms %>% 
+  select(-`Gene Name`) %>% 
+  column_to_rownames(var = "Gene ID")
+
+# pivot the TPM data longer
+fpkm_long <- fpkm_mat %>% 
+  as_tibble(rownames = "gene_id") %>% 
+  pivot_longer(-gene_id, names_to = "individual", values_to = "FPKM")
+```
+
+## Join TPM and FPKM data to main dataframe
+
+```{r}
+# remove the gene version from the gene_id
+# the data from array expression doesn't have sub-IDs
+genes_noVersion <- genes %>% 
+  as_tibble() %>% 
+  mutate(gene_id = str_remove(gene_id, "\\.[0-9]+$"))
+
+# join the FPKM and TPM data onto the normalized count data df
+df2 <- df %>% 
+  mutate(gene_id = str_remove(gene_id, "\\.[0-9]+$")) %>% 
+  left_join(fpkm_long, by = c("gene_id", "individual")) %>% 
+  left_join(tpm_long, by = c("gene_id", "individual"))
+```
+
+## Pivot entire dataset longer
+
+Extract the normalization and count types separately and join on the gene names.
+
+```{r}
+# TODO: takes too long -- switch to DT
+df2_long <- df2 %>% 
+  pivot_longer(-c("gene_id", "individual"), 
+               names_to = "metric",
+               values_to = "value") %>% 
+  mutate(value = replace_na(value, 0)) %>% 
+  left_join(genes_noVersion, by = "gene_id")
+```
+
+## Read in inividual level information
+
+```{r}
+samples <- read_rds(here("results", "rds-files", "samples.rds"))
+
+# extract only individual-level information
+samples_462 <- samples %>% 
+  as_tibble() %>%
+  select(-center) %>% 
+  distinct()
+
+head(samples_462)
+```
+
+## Join individual information onto long df
+
+```{r}
+df2_long <- df2_long %>% 
+  left_join(samples_462, by = "individual")
+
+head(df2_long)
+```
+
+## Remove data we don't need
+
+Present to the user a smaller set of available metrics (TPM, FPKM, VST, TMM_CPM, TMM_RPKM).
+Otherwise, there are too many, possibly confusing ways to look at the same data. 
+Also, recode the ancestry to be the population code from 1000 genomes.
+
+```{r}
+df2_clean <- df2_long %>%
+  filter(metric %in% c("TMM_CPM", "TMM_RPKM", "VST", "FPKM", "TPM")) %>% 
+  mutate(metric = recode(metric, "TMM_CPM" = "CPM", "TMM_RPKM" = "RPKM"),
+         ancestry = recode(ancestry, "British" = "GBR", "Finland" = "FIN", "Tuscan" = "TSI", "Utah" = "CEU", "Yoruba" = "YRI")) %>% 
+  select(individual, sex, population = ancestry, gene_name, gene_id, seqnames:gene_type, metric, value)
+
+# convert to data.table and set keys
+dt <- as.data.table(df2_clean)
+setkeyv(dt, cols = c("gene_name", "metric"))
+```
+
+## Write data out
+
+Compress the data for faster download/uploads.
+
+```{r}
+write_rds(dt, here("results", "rds-files", "data.rds"), compress = "gz")
+```
