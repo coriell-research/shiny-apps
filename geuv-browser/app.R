@@ -1,5 +1,4 @@
 library(shiny)
-library(shinythemes)
 library(shinyWidgets)
 library(pool)
 
@@ -22,85 +21,96 @@ load(here("data", "input-selections.RData"))
 
 # set up ui --------------------------------------------------------------------
 
-ui <- fluidPage(
-  navbarPage(
-    title = "Coriell GEUVADIS Expression Browser",
-    theme = shinytheme("flatly"),
-    tabPanel(
-      "Browser",
-      pageWithSidebar(
-        headerPanel("Select Data"),
-        sidebarPanel(
-          width = 2,
-          selectizeInput(
-            inputId = "gene",
-            label = "Enter Gene Symbol",
-            choices = NULL,
-            multiple = FALSE
-          ),
-          pickerInput(
-            inputId = "individuals",
-            label = "Individual(s)",
-            choices = individuals,
-            selected = individuals,
-            options = list(`actions-box` = TRUE, size = 10),
-            multiple = TRUE
-          ),
-          checkboxGroupInput(
-            inputId = "populations",
-            label = "Populations(s)",
-            choices = populations,
-            selected = populations
-          ),
-          checkboxGroupInput(
-            inputId = "sexes",
-            label = "Sex",
-            choices = sexes,
-            selected = sexes
-          ),
-          selectInput(
-            inputId = "metric",
-            label = "Count Metric",
-            choices = metrics,
-            selected = "CPM",
-            multiple = FALSE
-          )
+ui <- navbarPage(
+  theme = "modified-flatly.css",
+  windowTitle = "Coriell GEUVADIS Browser",
+  title = div(
+    a(
+      href = "https://www.coriell.org/",
+      img(
+        src = "coriell-logo.png",
+        alt = "Coriell Logo",
+        width = 400,
+        height = 100,
+        style = "padding-right: 10px"
+      )
+    ),
+    "GEUVADIS Expression Browser"
+  ),
+  tabPanel(
+    h3("Browser", style = "color:orange;text-align:center"),
+    pageWithSidebar(
+      headerPanel("Select Data"),
+      sidebarPanel(
+        width = 2,
+        selectizeInput(
+          inputId = "gene",
+          label = "Enter Gene Symbol",
+          choices = NULL,
+          multiple = FALSE
         ),
-        mainPanel = mainPanel(
-          tabsetPanel(
-            id = "main",
-            tabPanel(
-              "Table", DT::dataTableOutput("table"),
-              downloadButton("downloadData", "Download")
+        pickerInput(
+          inputId = "individuals",
+          label = "Individual(s)",
+          choices = individuals,
+          selected = individuals,
+          options = list(`actions-box` = TRUE, size = 10),
+          multiple = TRUE
+        ),
+        checkboxGroupInput(
+          inputId = "populations",
+          label = "Populations(s)",
+          choices = populations,
+          selected = populations
+        ),
+        checkboxGroupInput(
+          inputId = "sexes",
+          label = "Sex",
+          choices = sexes,
+          selected = sexes
+        ),
+        selectInput(
+          inputId = "metric",
+          label = "Count Metric",
+          choices = metrics,
+          selected = "CPM",
+          multiple = FALSE
+        )
+      ),
+      mainPanel = mainPanel(
+        tabsetPanel(
+          id = "main",
+          tabPanel(
+            "Table", DT::dataTableOutput("table"),
+            downloadButton("downloadData", "Download")
+          ),
+          tabPanel(
+            "Expression Histogram",
+            sliderInput("bins",
+              label = "Select number of bins",
+              value = 30,
+              min = 1,
+              max = 462
             ),
-            tabPanel(
-              "Expression Histogram",
-              sliderInput("bins",
-                label = "Select number of bins",
-                value = 30,
-                min = 1,
-                max = 462
-              ),
-              selectizeInput("individual",
-                "Show expression for:",
-                choices = individuals,
-                options = list(
-                  placeholder = "Select an indivual sample",
-                  onInitialize = I('function() { this.setValue(""); }')
-                )
-              ),
-              plotOutput("hist"),
-              h3("Distribution Summary"),
-              verbatimTextOutput("summary")
-            )
+            selectizeInput("individual",
+              "Show expression for:",
+              choices = individuals,
+              options = list(
+                placeholder = "Select an indivual sample",
+                onInitialize = I('function() { this.setValue(""); }')
+              )
+            ),
+            plotOutput("hist"),
+            h3("Distribution Summary"),
+            verbatimTextOutput("summary")
           )
         )
       )
-    ),
-    tabPanel(
-      "About",
-      includeMarkdown(here("doc", "about.md"))
     )
+  ),
+  tabPanel(
+    h3("About", style = "color:orange;text-align:center"),
+    includeMarkdown(here("doc", "about.md"))
   )
 )
 
@@ -126,15 +136,18 @@ server <- function(input, output, session) {
   })
 
   # datatable tabset ------------------------------------------------
-  output$table <- DT::renderDataTable({
-    d() %>%
-      collect() %>%
-      as.data.frame() %>% 
-      mutate(individual = paste0('<a href="https://www.coriell.org/0/Sections/Search/Sample_Detail.aspx?Ref=', individual, '&Product=DNA">', individual, '</a>'),
-             value = round(value, 2)) %>% 
-      arrange(desc(value))
-  }, 
-  escape = c('sex', 'population', 'gene_name', 'gene_id', 'seqnames', 'start', 'end', 'width', 'strand', 'gene_type', 'metric', 'value')
+  output$table <- DT::renderDataTable(
+    {
+      d() %>%
+        collect() %>%
+        as.data.frame() %>%
+        mutate(
+          individual = paste0('<a href="https://www.coriell.org/0/Sections/Search/Sample_Detail.aspx?Ref=', individual, '&Product=DNA">', individual, "</a>"),
+          value = round(value, 2)
+        ) %>%
+        arrange(desc(value))
+    },
+    escape = c("sex", "population", "gene_name", "gene_id", "seqnames", "start", "end", "width", "strand", "gene_type", "metric", "value")
   )
 
   output$downloadData <- downloadHandler(
