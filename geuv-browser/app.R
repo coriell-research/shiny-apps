@@ -1,5 +1,6 @@
 library(shiny)
 library(shinyWidgets)
+library(bslib)
 library(pool)
 
 library(forcats)
@@ -22,23 +23,11 @@ load(here("data", "input-selections.RData"))
 # set up ui --------------------------------------------------------------------
 
 ui <- navbarPage(
-  theme = "modified-flatly.css",
+  theme = bs_theme(bootswatch = "flatly"),
   windowTitle = "Coriell GEUVADIS Browser",
-  title = div(
-    a(
-      href = "https://www.coriell.org/",
-      img(
-        src = "coriell-logo.png",
-        alt = "Coriell Logo",
-        width = 400,
-        height = 100,
-        style = "padding-right: 10px"
-      )
-    ),
-    "GEUVADIS Expression Browser"
-  ),
+  title = "Coriell GEUVADIS Browser",
   tabPanel(
-    h3("Browser", style = "color:orange;text-align:center"),
+    "Browser",
     pageWithSidebar(
       headerPanel("Select Data"),
       sidebarPanel(
@@ -109,7 +98,7 @@ ui <- navbarPage(
     )
   ),
   tabPanel(
-    h3("About", style = "color:orange;text-align:center"),
+    "About",
     includeMarkdown(here("doc", "about.md"))
   )
 )
