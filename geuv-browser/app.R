@@ -32,7 +32,7 @@ ui <- navbarPage(
       img(
         src = "logo.png",
         alt = "Coriell Logo",
-        style = "position: fixed; right: 20px; top: 1px"
+        style = "position: absolute; right: 20px; top: 1px"
         )
       ), "Coriell GEUVADIS Expression Browser"
   ),
