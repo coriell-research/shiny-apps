@@ -23,9 +23,19 @@ load(here("data", "input-selections.RData"))
 # set up ui --------------------------------------------------------------------
 
 ui <- navbarPage(
-  theme = bs_theme(bootswatch = "flatly"),
+  theme = bs_theme(primary = "#163d6f", secondary = "#DDDDDD", 
+                   success = "#FFA500", font_scale = NULL, bootswatch = "flatly"),
   windowTitle = "Coriell GEUVADIS Browser",
-  title = "Coriell GEUVADIS Browser",
+  title = div(
+    a(
+      href = "https://www.coriell.org/",
+      img(
+        src = "logo.png",
+        alt = "Coriell Logo",
+        style = "position: fixed; right: 15px; top: 4px"
+        )
+      ), "Coriell GEUVADIS Expression Browser"
+  ),
   tabPanel(
     "Browser",
     pageWithSidebar(
@@ -158,7 +168,7 @@ server <- function(input, output, session) {
   output$hist <- renderPlot({
     d() %>%
       ggplot(aes(x = value)) +
-      geom_histogram(fill = "steelblue", color = "black", bins = input$bins) +
+      geom_histogram(fill = "#163d6f", color = "grey80", alpha = 0.9, bins = input$bins) +
       geom_vline(xintercept = individual_expr(), linetype = 2, color = "red", size = 3) +
       theme_light() +
       labs(
