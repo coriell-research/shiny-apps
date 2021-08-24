@@ -32,7 +32,7 @@ ui <- navbarPage(
       img(
         src = "logo.png",
         alt = "Coriell Logo",
-        style = "position: fixed; right: 15px; top: 4px"
+        style = "position: fixed; right: 20px; top: 1px"
         )
       ), "Coriell GEUVADIS Expression Browser"
   ),
@@ -168,7 +168,7 @@ server <- function(input, output, session) {
   output$hist <- renderPlot({
     d() %>%
       ggplot(aes(x = value)) +
-      geom_histogram(fill = "#163d6f", color = "grey80", alpha = 0.9, bins = input$bins) +
+      geom_histogram(fill = "#163d6f", color = "grey80", alpha = 0.85, bins = input$bins) +
       geom_vline(xintercept = individual_expr(), linetype = 2, color = "red", size = 3) +
       theme_light() +
       labs(
