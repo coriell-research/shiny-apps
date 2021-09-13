@@ -8,6 +8,7 @@ library(PCAtools)
 library(magrittr)
 library(patchwork)
 library(coriell)
+library(MetaVolcanoR)
 
 
 dge_se <- readRDS(here("data", "dge_se.rds"))
@@ -90,6 +91,7 @@ ui <- fluidPage(
         options = list(`actions-box` = TRUE),
         width = "100%"
         ),
+      h4("PCA Params:"),
       numericInput("var",
         label = "Remove Variance",
         value = 0.1,
@@ -108,6 +110,35 @@ ui <- fluidPage(
       checkboxInput("complete",
         label = "Use Complete Cases",
         value = FALSE
+      ),
+      h4("Meta-Analysis Params:"),
+      numericInput(
+        "meta_pVal",
+        label = "FDR threshold",
+        min = 0,
+        max = 1,
+        value = 0.1,
+        step = 0.1),
+      numericInput(
+        "meta_fc",
+        label = "FC Threshold",
+        min = 0,
+        max = 100,
+        step = 1,
+        value = 2
+      ),
+      numericInput(
+        "meta_thresh",
+        label = "Meta Threshold",
+        min = 0.01,
+        max = 1,
+        value = 0.01,
+        step = 0.01
+      ),
+      checkboxInput(
+        "meta_collapse",
+        label = "Collapse DE?",
+        value = FALSE 
       ),
       actionBttn("run",
         label = "Run"
@@ -183,6 +214,14 @@ ui <- fluidPage(
             options = list(maxOptions = length(features))
           ),
           DT::dataTableOutput("features")
+        ),
+        tabPanel(
+          "Meta-Volcano",
+          plotlyOutput("metavolcano"),
+        ),
+        tabPanel(
+          "Meta-Barplot",
+          plotOutput("metabarplot")
         )
       )
     )
@@ -197,8 +236,10 @@ server <- function(input, output, session) {
 
     # Select the dataset based on user input
     d <- dge_se
+    d2 <- dge_res
     if (input$dataset == "Repetitive Elements") {
       d <- dre_se
+      d2 <- dre_res
     }
 
     # filter dataset based on input
@@ -209,7 +250,11 @@ server <- function(input, output, session) {
       d$tissue %chin% input$tissues &
       d$disease %chin% input$diseases &
       d$epigenetic_class %chin% input$epigenetic]
-
+    
+    # get the ids for the contrasts in the filtered list
+    ids <- colnames(d_filtered)
+    dge_list <- split(d2[id %chin% ids], by = "id")
+    
     M <- assay(d_filtered, input$data)
     if (input$complete) {
       M[M == 0] <- NA
@@ -225,8 +270,8 @@ server <- function(input, output, session) {
       removeVar = input$var
     )
 
-    # Return PCA and filtered matrix as reactive objects
-    list("PCA" = pca_res, "M" = M)
+    # Return PCA, filtered matrix and dge list as reactive objects
+    list("PCA" = pca_res, "M" = M, "dge_list" = dge_list)
   })
 
   # Create single reactive data.table for use in plotting functions
@@ -318,7 +363,33 @@ server <- function(input, output, session) {
   
   # Differential expression data
   output$features <- DT::renderDataTable({res_dt[feature_id %chin% input$features]})
-
+  
+  # Meta-Analysis
+  meta_analysis <- reactive({
+    votecount_mv(diffexp = data()[["dge_list"]],
+                 pcriteria = "FDR",
+                 foldchangecol = "logFC",
+                 genenamecol = "feature_id",
+                 geneidcol = "feature_id",
+                 pvalue = input$meta_pVal,
+                 foldchange = input$meta_fc, 
+                 metathr = input$meta_thresh,
+                 collaps = input$meta_collapse,
+                 jobname = "MetaVolcano", 
+                 outputfolder = tempdir(),
+                 draw = "HTML")
+  })
+  
+  # meta-volcano plot
+  output$metavolcano <- renderPlotly({
+    ggplotly(meta_analysis()@MetaVolcano)
+  })
+  
+  # meta-counts barplot
+  output$metabarplot <- renderPlot({
+    meta_analysis()@degfreq
+  })
+  
 }
 
 # Run the application
