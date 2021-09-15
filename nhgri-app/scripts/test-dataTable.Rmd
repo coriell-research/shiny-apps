@@ -12,7 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 Create a general reading function that works with a switch statement dependent 
 on the file extension. 
 
-The new format should NOT contain any front matter i.e. only the header follwed
+The new format should NOT contain any front matter i.e. only the header followed
 by data. tsv format will be preferred but the app should accept other formats
 (.csv, .txt, .xlsx) just in case the user exports incorrectly.
 
@@ -22,8 +22,8 @@ library(here)
 
 
 # input file path from shiny app
-ssrs_fpath <- here("data", "NHGRI Shipping History Detail Q4Y5.csv")
-lay_fpath <- here("data", "NHGRI_Lay_Summary_Q4Y5_V2_UTF-8.csv")
+ssrs_fpath <- here("data", "test-data", "NHGRI Shipping History Detail Q4Y5.csv")
+lay_fpath <- here("data", "test-data", "NHGRI_Lay_Summary_Q4Y5_V2_UTF-8.csv")
 
 # just wrap fread in a function call with the desired rows to skip
 readInput <- function(fpath, skip_rows) {
@@ -162,9 +162,9 @@ cleanAndUnestLay <- function(dt) {
   # remove commas from names and unnnest based on population
   dt[, Customer := trimws(Customer)]
   dt <- dt[, Customer := gsub(",", "", Customer), ][, 
-             .(Customer, Population, Lay_Summary1)][, 
-             .(Population = strsplit(Population, "\r\n|\n", perl = TRUE), Customer, Lay_Summary1)][, 
-             .(Population = as.character(unlist(Population))), by = c("Customer", "Lay_Summary1")]
+             .(Customer, Population, Lay_Summary1, Institution_Name)][, 
+             .(Population = strsplit(Population, "\r\n|\n", perl = TRUE), Customer, Lay_Summary1, Institution_Name)][, 
+             .(Population = as.character(unlist(Population))), by = c("Customer", "Lay_Summary1", "Institution_Name")]
   
   # check for duplicates in combined panel
   dt <- dupRows(dt, pop_col = "Population")
@@ -172,7 +172,8 @@ cleanAndUnestLay <- function(dt) {
   dt[Population != "UNKNOWN_DESCRIPTION",
      .(Population = cleanPopulation(Population),
        Investigator = Customer,
-      `Lay Summary` = Lay_Summary1)]
+      `Lay Summary` = Lay_Summary1,
+       Institution_Name)]
 }
 
 # Function for joining lay summaries onto SSRS report data.tables
@@ -186,17 +187,25 @@ joinLayOntoSSRS <- function(ssrs_list, lay_dt) {
           all.y = FALSE)
     })
   
-  # Select required columns and sort
-  selected <- lapply(
+  # Select required from lay summaries
+  lay_dts <- lapply(
     joined, function(dt) {
-      dt[, .(Investigator, Institution, Product, `Lay Summary`)][order(Investigator)]
+      dt[, .(Investigator, Institution = Institution_Name, Product, `Lay Summary`)][order(Investigator)]
       }
     )
   
+  # Select require columns from SSRS reports (ensures we use lay summary institution names)
+  ssrs_dts <- lapply(
+    joined, function(dt) {
+      dt[, .(Investigator, Institution = Institution_Name, Country, Product, `# Ordered`, `Research Intent`, Population)][
+        order(Investigator)]
+    })
+  
   # Remove any possible duplicates
-  uniqs <- lapply(selected, function(dt) {unique(dt)})
+  uniq_lay <- lapply(lay_dts, function(dt) {unique(dt)})
+  uniq_ssrs <- lapply(ssrs_dts, function(dt) {unique(dt)})
 
-  return(uniqs)
+  return(list("lay" = uniq_lay, "ssrs" = uniq_ssrs))
 }
 
 # function to split the `Investigator` column into first and last names
@@ -245,9 +254,13 @@ test
 ```{r}
 ssrs_dts <- cleanGroupSplitSSRS(ssrs_dt)
 lay_unnested_dt <- cleanAndUnestLay(lay_dt)
-lay_dts <- joinLayOntoSSRS(ssrs_dts, lay_unnested_dt)
-report_dts <- lapply(ssrs_dts, splitInvestigator)
-lay_dts <- lapply(lay_dts, splitInvestigator)
+joined <- joinLayOntoSSRS(ssrs_dts, lay_unnested_dt)
+
+joined_ssrs <- joined[["ssrs"]]
+joined_lay <- joined[["lay"]]
+
+report_dts <- lapply(joined_ssrs, splitInvestigator)
+lay_dts <- lapply(joined_lay, splitInvestigator)
 checkProcessing(report_dts, lay_dts)
 ```
 

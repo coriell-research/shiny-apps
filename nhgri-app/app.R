@@ -107,7 +107,9 @@ server <- function(input, output, session) {
   observeEvent(input$run, {
     report_dfs <- cleanGroupSplitSSRS(ssrs())
     lay_unnested <- cleanAndUnestLay(lay())
-    lay_dfs <- joinLayOntoSSRS(report_dfs, lay_unnested)
+    joined <- joinLayOntoSSRS(report_dfs, lay_unnested)
+    lay_dfs <- joined[["lay"]]
+    report_dfs <- joined[["ssrs"]]
 
     # drop population column from report dfs after joins and reorder
     report_dfs <- lapply(report_dfs, function(dt) {dt[, Population := NULL][order(Investigator)]})
@@ -118,7 +120,7 @@ server <- function(input, output, session) {
 
     # after processing, update preview choices
     updateSelectInput(session, "dataset", choices = c("Research Intent", "Lay Summary"))
-    updateSelectInput(session, "population", choices = names(report_dfs))
+    updateSelectInput(session, "population", choices = sort(names(report_dfs)))
 
     d <- reactive({
       if (input$dataset == "Research Intent") {

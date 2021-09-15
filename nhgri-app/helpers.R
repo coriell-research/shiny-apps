@@ -95,17 +95,18 @@ cleanAndUnestLay <- function(dt) {
   # remove commas from names and unnnest based on population
   dt[, Customer := trimws(Customer)]
   dt <- dt[, Customer := gsub(",", "", Customer), ][, 
-            .(Customer, Population, Lay_Summary1)][, 
-            .(Population = strsplit(Population, "\r\n|\n", perl = TRUE), Customer, Lay_Summary1)][, 
-                                                                                                                                                                                 .(Population = as.character(unlist(Population))), by = c("Customer", "Lay_Summary1")]
+            .(Customer, Population, Lay_Summary1, Institution_Name)][, 
+            .(Population = strsplit(Population, "\r\n|\n", perl = TRUE), Customer, Lay_Summary1, Institution_Name)][, 
+            .(Population = as.character(unlist(Population))), by = c("Customer", "Lay_Summary1", "Institution_Name")]
   
   # check for duplicates in combined panel
   dt <- dupRows(dt, pop_col = "Population")
   
-  dt[Population != "UNKNOWN_POPULATION",
+  dt[Population != "UNKNOWN_DESCRIPTION",
      .(Population = cleanPopulation(Population),
-      Investigator = Customer,
-      `Lay Summary` = Lay_Summary1)]
+       Investigator = Customer,
+       `Lay Summary` = Lay_Summary1,
+       Institution_Name)]
 }
 
 # Function for joining lay summaries onto SSRS report data.tables
@@ -119,17 +120,25 @@ joinLayOntoSSRS <- function(ssrs_list, lay_dt) {
           all.y = FALSE)
   })
   
-  # Select required columns and sort
-  selected <- lapply(
+  # Select required from lay summaries
+  lay_dts <- lapply(
     joined, function(dt) {
-      dt[, .(Investigator, Institution, Product, `Lay Summary`)][order(Investigator)]
+      dt[, .(Investigator, Institution = Institution_Name, Product, `Lay Summary`)][order(Investigator)]
     }
   )
   
-  # Remove any possible duplicates
-  uniqs <- lapply(selected, function(dt) {unique(dt)})
+  # Select require columns from SSRS reports (ensures we use lay summary institution names)
+  ssrs_dts <- lapply(
+    joined, function(dt) {
+      dt[, .(Investigator, Institution = Institution_Name, Country, Product, `# Ordered`, `Research Intent`, Population)][
+        order(Investigator)]
+    })
   
-  return(uniqs)
+  # Remove any possible duplicates
+  uniq_lay <- lapply(lay_dts, function(dt) {unique(dt)})
+  uniq_ssrs <- lapply(ssrs_dts, function(dt) {unique(dt)})
+  
+  return(list("lay" = uniq_lay, "ssrs" = uniq_ssrs))
 }
 
 # Function to split the `Investigator` column into first and last names
