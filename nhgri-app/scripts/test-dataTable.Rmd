@@ -1,0 +1,254 @@
+---
+title: "Test data.table implementation of NHGRI app"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Function for reading in SSRS and Lay Summary Files
+
+Create a general reading function that works with a switch statement dependent 
+on the file extension. 
+
+The new format should NOT contain any front matter i.e. only the header follwed
+by data. tsv format will be preferred but the app should accept other formats
+(.csv, .txt, .xlsx) just in case the user exports incorrectly.
+
+```{r}
+library(data.table)
+library(here)
+
+
+# input file path from shiny app
+ssrs_fpath <- here("data", "NHGRI Shipping History Detail Q4Y5.csv")
+lay_fpath <- here("data", "NHGRI_Lay_Summary_Q4Y5_V2_UTF-8.csv")
+
+# just wrap fread in a function call with the desired rows to skip
+readInput <- function(fpath, skip_rows) {
+  dt <- fread(fpath, encoding = "UTF-8", skip = skip_rows)
+  return(dt)
+}
+
+# read in the files
+lay_dt <- readInput(lay_fpath, skip_rows = 3)
+ssrs_dt <- readInput(ssrs_fpath, skip_rows = 0)
+```
+
+## Function For File Validation
+
+All columns must be present and in the same order in order for the files to be
+validated. 
+
+```{r}
+ssrs_required <- c("Collection_Type_id", "Ref", "Exp", "Product", "From_Product", 
+                   "Quantity_in_Container", "Quantity", "Quantity2", "Order_Date", 
+                   "Order_Id", "Ship_Date", "Order_Type", "DiagDesc", "RIntentType", 
+                   "RIntent", "Name", "Customer_Id", "Institution", "Institution_Type", 
+                   "Country", "Order_Remark", "Invoice_Item_Price", "Queue_Price_11", 
+                   "Queue_Price_21", "Queue_Price_31", "Invoice_Amt", "Price_Adjustment", 
+                   "Ship_Charge", "Special_Handling_Charge", "Prepayment_Amt", "Invoice_Paid_Amt")
+
+lay_required <- c("Lay_Summary1", "Customer", "Country", "Institution_Name", 
+                  "Population", "Collection", "Addtl_Info")
+
+# these would be put into validation function
+stopifnot("Required column is missing from input." = all(colnames(ssrs_dt) == ssrs_required))
+stopifnot("Required column is missing from input." = all(colnames(lay_dt) == lay_required))
+```
+
+## Process input files
+
+The DiagDesc (aka population) needs to be standardized. The "JAPANESE IN TOKYO, JAPAN AND HAN CHINESE IN BEIJING, CHINA"
+needs to be duplicated when detected. Then data needs to be grouped, summed and
+split into a list of separate dts for each population.
+
+NOTES:
+
+- The columns have new names. Use the raw new names. 
+- New column called `Quantity` appears to be `quantity_ordered` from previous input
+files. Double-check this
+- The lay summaries `Population` column has Windows newline breaks. The line 
+breaks could change depending on who exports the files.be sure to handle splits
+on either type of line break.
+- There are non-UTF-8 characters in the new input. "DUBOIS ADÉLAÏDE" row 33 of 
+the lay summary input file. **The csv must be exported with UTF-8 encoding**
+
+```{r}
+# Function for renaming the populations
+cleanPopulation <- function(s) {
+  s <- toupper(s)
+  clean_pop <- fcase(
+    grepl("BARBADOS", s), "AFRICAN ANCESTRY FROM BARBADOS IN THE CARIBBEAN",
+    grepl("SOUTHWEST", s), "AFRICAN ANCESTRY IN SOUTHWEST USA",
+    grepl("BENGALI", s), "BENGALI IN BANGLADESH",
+    grepl("BRITISH", s), "BRITISH FROM ENGLAND AND SCOTLAND, UK",
+    grepl("XISHUANGBANNA", s), "CHINESE DAI IN XISHUANGBANNA, CHINA",
+    grepl("COLOMBIAN", s), "COLOMBIAN IN MEDELLIN, COLOMBIA",
+    grepl("ESAN", s), "ESAN FROM NIGERIA",
+    grepl("FINNISH", s), "FINNISH IN FINLAND",
+    grepl("GAMBIAN", s), "GAMBIAN IN WESTERN DIVISION, THE GAMBIA",
+    grepl("GUJARATI", s), "GUJARATI INDIANS IN HOUSTON, TEXAS, USA",
+    grepl("BEIJING", s), "HAN CHINESE IN BEIJING, CHINA",
+    grepl("CHINESE SOUTH", s), "HAN CHINESE SOUTH, CHINA", 
+    grepl("IBERIAN", s), "IBERIAN POPULATIONS IN SPAIN",
+    grepl("TELUGU", s), "INDIAN TELUGU IN THE UK",
+    grepl("JAPANESE", s), "JAPANESE IN TOKYO, JAPAN",
+    grepl("KINH", s), "KINH IN HO CHI MINH CITY, VIETNAM",
+    grepl("LUHYA", s), "LUHYA IN WEBUYE, KENYA",
+    grepl("MAASAI", s), "MAASAI IN KINYAWA, KENYA",
+    grepl("MENDE", s), "MENDE IN SIERRA LEONE",
+    grepl("MEXICAN", s), "MEXICAN ANCESTRY IN LOS ANGELES, CALIFORNIA, USA",
+    grepl("PERUVIAN", s), "PERUVIAN IN LIMA, PERU",
+    grepl("PUERTO RICAN", s), "PUERTO RICAN IN PUERTO RICO",
+    grepl("PUNJABI", s), "PUNJABI IN LAHORE, PAKISTAN",
+    grepl("SRI LANKAN", s), "SRI LANKAN TAMIL IN THE UK",
+    grepl("TOSCANI", s), "TOSCANI IN ITALIA",
+    grepl("YORUBA", s), "YORUBA IN IBADAN, NIGERIA",
+    grepl("DENVER", s), "CHINESE IN METROPOLITAN DENVER CO USA",
+    default = "UNKNOWN_DESCRIPTION"
+  )
+  return(clean_pop)
+}
+
+# Function for detecting "JAPANESE IN TOKYO, JAPAN AND HAN CHINESE IN BEIJING, CHINA" and then duplicating the rows
+dupRows <- function(dt, pop_col) {
+  dt <- copy(dt)
+  dup_idxs <- which(grepl("JAPANESE IN TOKYO, JAPAN AND HAN CHINESE IN BEIJING, CHINA", dt[[pop_col]]))
+  
+  if (!rlang::is_empty(dup_idxs)) {
+    dup_rows <- dt[rep(dup_idxs, each = 2), ]
+    dup_rows$Population <- rep(c("JAPANESE IN TOKYO, JAPAN", "HAN CHINESE IN BEIJING, CHINA"), length(dup_idxs))
+    dt <- dt[-dup_idxs, ]
+    dt <- rbind(dt, dup_rows)
+  }
+  return(dt)
+}
+
+# Function for cleaning, grouping, and splitting SSRS dt
+cleanGroupSplitSSRS <- function(dt) {
+  # duplicate rows from combined panel
+  dt <- dupRows(dt, pop_col = "DiagDesc")
+  
+  # check for and remove any all NA rows
+  dt <- dt[!apply(dt, 1, function(x) all(is.na(x))), ]
+  
+  # clean populations and group and summarize orders
+  dt <- dt[Order_Type != "Replacement"][, 
+           Population := cleanPopulation(DiagDesc)][,
+          .("# Ordered" = sum(Quantity)), 
+          by = c("Population", "Name", "Institution", "Country", "Product", "RIntentType")]
+  
+  # rename columns to match desired output
+  setnames(
+    dt, 
+    old = c("# Ordered", "Population", "Name", "Institution", "Country", "Product", "RIntentType"),
+    new = c("# Ordered", "Population", "Investigator", "Institution", "Country", 
+            "Product", "Research Intent"))
+  
+  dt <- dt[, .(Investigator, Institution, Country, Product, `# Ordered`, `Research Intent`, Population)]
+  
+  # split the grouped data.table into a list of dts by population
+  ssrs_dts <- split(dt, by = "Population")
+  
+  return(ssrs_dts)
+}
+
+# Function for cleaning and unnesting the lay summary file
+cleanAndUnestLay <- function(dt) {
+  dt <- copy(dt)
+  
+  # remove commas from names and unnnest based on population
+  dt[, Customer := trimws(Customer)]
+  dt <- dt[, Customer := gsub(",", "", Customer), ][, 
+             .(Customer, Population, Lay_Summary1)][, 
+             .(Population = strsplit(Population, "\r\n|\n", perl = TRUE), Customer, Lay_Summary1)][, 
+             .(Population = as.character(unlist(Population))), by = c("Customer", "Lay_Summary1")]
+  
+  # check for duplicates in combined panel
+  dt <- dupRows(dt, pop_col = "Population")
+
+  dt[Population != "UNKNOWN_DESCRIPTION",
+     .(Population = cleanPopulation(Population),
+       Investigator = Customer,
+      `Lay Summary` = Lay_Summary1)]
+}
+
+# Function for joining lay summaries onto SSRS report data.tables
+joinLayOntoSSRS <- function(ssrs_list, lay_dt) {
+  joined <- lapply(ssrs_list, function(ssrs_dt) {
+    merge(x = ssrs_dt, 
+          y = lay_dt, 
+          by.x = c("Investigator", "Population"), 
+          by.y = c("Investigator", "Population"),
+          all.x = TRUE,
+          all.y = FALSE)
+    })
+  
+  # Select required columns and sort
+  selected <- lapply(
+    joined, function(dt) {
+      dt[, .(Investigator, Institution, Product, `Lay Summary`)][order(Investigator)]
+      }
+    )
+  
+  # Remove any possible duplicates
+  uniqs <- lapply(selected, function(dt) {unique(dt)})
+
+  return(uniqs)
+}
+
+# function to split the `Investigator` column into first and last names
+splitInvestigator <- function(dt) {
+  dt <- copy(dt)
+  dt <- tidyr::separate(dt, col = Investigator, into = c("last", "first"), sep = "\\s", extra = "merge")
+  dt[, `:=`(first = trimws(first), last = trimws(last))]
+}
+
+# Function for checking for missing values in final reports
+# check the report and lay dfs for missing values
+checkProcessing <- function(reports, lays) {
+  check_missing <- function(df) {
+    missing <- sapply(df, function(x) {
+      any(is.na(x))
+    })
+    names(missing[missing])
+  }
+  
+  reports_missings <- lapply(reports, check_missing)
+  reports_missings <- lapply(reports_missings[!sapply(reports_missings, rlang::is_empty)], paste, collapse = ",")
+  lay_missings <- lapply(lays, check_missing)
+  lay_missings <- lapply(lay_missings[!sapply(lay_missings, rlang::is_empty)], paste, collapse = ",")
+  
+  messages <- c("RESEARCH INTENT MESSAGES ----------")
+  if (!rlang::is_empty(reports_missings)) {
+    for (p in names(reports_missings)) {
+      msg <- paste(reports_missings[[p]], "column(s) contain missing values in", p, "Research Intent table. Check data.")
+      messages <- append(messages, msg)
+    }
+  }
+  
+  messages <- append(messages, "LAY SUMMARY MESSAGES ----------")
+  if (!rlang::is_empty(lay_missings)) {
+    for (p in names(lay_missings)) {
+      msg <- paste(lay_missings[[p]], "column(s) contain missing values in", p, "Lay Summary table. Check data.")
+      messages <- append(messages, msg)
+    }
+  }
+  messages
+}
+```
+
+test
+
+```{r}
+ssrs_dts <- cleanGroupSplitSSRS(ssrs_dt)
+lay_unnested_dt <- cleanAndUnestLay(lay_dt)
+lay_dts <- joinLayOntoSSRS(ssrs_dts, lay_unnested_dt)
+report_dts <- lapply(ssrs_dts, splitInvestigator)
+lay_dts <- lapply(lay_dts, splitInvestigator)
+checkProcessing(report_dts, lay_dts)
+```
+
+

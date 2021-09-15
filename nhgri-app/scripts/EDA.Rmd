@@ -1,0 +1,338 @@
+---
+title: "QueueDump EDA"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    theme: flatly
+    highlight: tango
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = TRUE,
+                      message = FALSE)
+```
+
+## Load Libraries
+
+```{r}
+library(tidyverse)
+library(here)
+library(readxl)
+```
+
+## Read in raw data from SSRS file
+
+If the SSRS file is consistent then this will be easier to automate because
+this call/ downstream processing will work for all exports.
+
+**Questions:** 
+
+- Are all SSRS file formatted the same?
+
+```{r}
+df <- read_excel(here("data", 
+                      "NHGRI Shipping History Detail 110120_013121.xlsx"), 
+                 skip = 1) %>% 
+  janitor::clean_names()
+```
+
+## Group data by desired output 
+
+looks like not all orders have names associated with them so instead of including
+`NAME` as a column in the grouping it is safer user the `CUSTOMER ID` as the name
+grouping factor. We can later extract all of the distinct customer id-name 
+combinations to create a mapping table and map names back onto the grouped data.
+
+```{r}
+# group the table by population and other order metadata used in output
+by_pop <- df %>%
+  group_by(diag_desc, 
+           customer_id,
+           name,
+           institution, 
+           country, 
+           product, 
+           r_intent_type) %>% 
+  summarize(number_ordered = sum(quantity_ordered)) %>% 
+  ungroup()
+
+by_pop
+```
+
+## Create a function for cleaning the population names
+
+Since there are only a set number of populations we can either have a table of the
+possible orders (PANELS/PLATES/etc.) and map them to their major populations OR
+have a function that extract extracts this information from a text string. I think
+the first option is safe yet less robust to new order types. The second option
+would require thoughtful function design so that the information isn't incorrectly
+parsed. Let's try to make a thoughtful function...
+
+**Questions**
+
+- The tokyo/han chinese data is problematic until I ask how to allocate their
+counts.
+- There is one population listed on the website that wasn't present in the dump, 
+possibly because no one ordered it; Denver Chinese. I inferred the name for this
+population from the website - this will need to be checked.
+
+```{r}
+clean_pop <- function(s) {
+  s <- str_to_upper(s)
+  
+  case_when(
+    # special case must be first so that TOKYO and HAN are detected properly after
+    str_detect(s, "TOKYO, JAPAN AND HAN CHINESE") ~ "JAPANESE IN TOKYO, JAPAN AND HAN CHINESE IN BEIJING, CHINA",
+    str_detect(s, "BARBADOS") ~ "AFRICAN ANCESTRY FROM BARBADOS IN THE CARIBBEAN",
+    str_detect(s, "SOUTHWEST") ~ "AFRICAN ANCESTRY IN SOUTHWEST USA",
+    str_detect(s, "BENGALI") ~ "BENGALI IN BANGLADESH",
+    str_detect(s, "BRITISH") ~ "BRITISH FROM ENGLAND AND SCOTLAND, UK",
+    str_detect(s, "XISHUANGBANNA") ~ "CHINESE DAI IN XISHUANGBANNA, CHINA",
+    str_detect(s, "COLOMBIAN") ~ "COLOMBIAN IN MEDELLIN, COLOMBIA",
+    str_detect(s, "ESAN") ~ "ESAN FROM NIGERIA",
+    str_detect(s, "FINNISH") ~ "FINNISH IN FINLAND",
+    str_detect(s, "GAMBIAN") ~ "GAMBIAN IN WESTERN DIVISION, THE GAMBIA",
+    str_detect(s, "GUJARATI") ~ "GUJARATI INDIANS IN HOUSTON, TEXAS, USA",
+    str_detect(s, "BEIJING") ~ "HAN CHINESE IN BEIJING, CHINA",
+    str_detect(s, "CHINESE SOUTH") ~ "HAN CHINESE SOUTH, CHINA", 
+    str_detect(s, "IBERIAN") ~ "IBERIAN POPULATIONS IN SPAIN",
+    str_detect(s, "TELUGU") ~ "INDIAN TELUGU IN THE UK",
+    str_detect(s, "JAPANESE") ~ "JAPANESE IN TOKYO, JAPAN",
+    str_detect(s, "KINH") ~ "KINH IN HO CHI MINH CITY, VIETNAM",
+    str_detect(s, "LUHYA") ~ "LUHYA IN WEBUYE, KENYA",
+    str_detect(s, "MAASAI") ~ "MAASAI IN KINYAWA, KENYA",
+    str_detect(s, "MENDE") ~ "MENDE IN SIERRA LEONE",
+    str_detect(s, "MEXICAN") ~ "MEXICAN ANCESTRY IN LOS ANGELES, CALIFORNIA, USA",
+    str_detect(s, "PERUVIAN") ~ "PERUVIAN IN LIMA, PERU",
+    str_detect(s, "PUERTO RICAN") ~ "PUERTO RICAN IN PUERTO RICO",
+    str_detect(s, "PUNJABI") ~ "PUNJABI IN LAHORE, PAKISTAN",
+    str_detect(s, "SRI LANKAN") ~ "SRI LANKAN TAMIL IN THE UK",
+    str_detect(s, "TOSCANI") ~ "TOSCANI IN ITALIA",
+    str_detect(s, "YORUBA") ~ "YORUBA IN IBADAN, NIGERIA",
+    str_detect(s, "DENVER") ~ "CHINESE IN METROPOLITAN DENVER CO USA",
+    TRUE ~ "UNKNOWN_DESCRIPTION"
+  )
+}
+```
+
+## Apply `clean_pop` to grouped df
+
+Create a mapping from the population description to the overall population name
+and regroup and recount. Eventually this step would be preformed all at once using
+the input data frame
+
+```{r}
+results_summary <- by_pop %>% 
+  mutate(population = clean_pop(diag_desc)) %>% 
+  select(-diag_desc) %>% 
+  group_by(population, customer_id, name, institution, country, product, r_intent_type) %>% 
+  summarise(number_ordered = sum(number_ordered)) %>% 
+  ungroup()
+
+# Do we get identical results applying this function to the input data?
+# the steps below would be run on input data
+results_summary2 <- df %>%
+  mutate(population = clean_pop(diag_desc)) %>% 
+  group_by(population, 
+           customer_id,
+           name,
+           institution, 
+           country, 
+           product, 
+           r_intent_type) %>% 
+  summarize(number_ordered = sum(quantity_ordered)) %>% 
+  ungroup()
+
+# we get the same results applying the function on the input data - good
+identical(results_summary, results_summary2)
+```
+
+## Split results dfs into separate dataframes
+
+These will become page 1 of the pdf reports
+
+```{r}
+# split the results into separate dataframes by population
+# These would be the first page of each pdf
+# for now, keep the population information in the dataframe
+results_dfs <- results_summary %>% 
+  select(population, name, institution, country, product, number_ordered, r_intent_type) %>% 
+  split(f = as.factor(.$population))
+
+# see that dfs are named by population
+names(results_dfs)
+
+# check a few
+results_dfs[["TOSCANI IN ITALIA"]]
+results_dfs[["HAN CHINESE SOUTH, CHINA"]]
+```
+
+## Pick a dataframe and check against PDF
+
+**Questions**
+
+- Some data looks like it's missing in the pdf reports. pdf does not have an 
+entry for JAN KORBEL + AFRICAN FROM BARBADOS but there are 6 rows for this
+entry in the SSRS dump. Why were these excluded?
+  - Looks like they are marked with DO NOT ship in comments -- this could be a filter after reading in
+- ED GREEN is missing in SSRS dump but present as a row in the pdf?
+
+I'm thinking the pdfs and the SSRS report might just contain different data...
+
+```{r}
+# pick a dataframe and check against
+results_dfs[["AFRICAN ANCESTRY FROM BARBADOS IN THE CARIBBEAN"]]
+
+# JAN KORBEL samples are not in the pdf but are present in my data
+# They have an order remark 'DO NOT SHIP' maybe that's why they were no included
+df %>% 
+  filter(name == "KORBEL JAN" & str_detect(diag_desc, "BARBADOS"))
+
+# are others like this?
+df %>% filter(str_detect(order_remark, "[Dd][Oo] [Nn][Oo][Tt] [Ss][Hh][Ii][Pp]"))
+
+# ------------------------------------------------------------------------------
+# Where is ED GREEN?
+df %>% 
+  filter(name == "GREEN ED")
+
+# SANTA CRUZ - ED GREEN institution is also not listed
+df %>% 
+  filter(str_detect(institution, "SANTA CRUZ"))
+
+# Another one, ERICH JARVIS
+df %>% 
+  filter(name == "JARVIS ERICH")
+
+# what other kind of order remarks are there?
+# how do we handle these cases?
+df %>% select(order_remark) %>% distinct()
+```
+
+## Read in the lay summary csv file
+
+This file will need to be joined onto the grouped data from above. Once joined,
+we can select the columns that we need and then output the formatted data.
+
+Looks like:
+
+- customers can have repeated entries
+- customers have commas in their names (this does not match SSRS names)
+- each entry is a lay summary for that customer/populations ordered combination
+- populations are nested in the same column with newlines meaning customer and lay
+summary information have to be replicated down after unnesting
+- There is an additional column that contains on a few rows with "yes" as the value
+These seem to be unimportant and i will drop them for now
+- There are some bad line breaks in the lay summaries (line breaks inside of names). I don't 
+think this is much of a problem since at least one of the rows will contain the correct string
+
+```{r}
+lay <- read_csv(here("data", "NHGRI_lay_summary_20210119.csv")) %>% 
+  janitor::clean_names()
+
+# fix customer names
+# split and nest population names on newlines
+# unnest the data, replicating names and summaries for each population
+# clean population names using clean pop function -- bad newlines result in UNKNOWN_DESCRIPTIONS
+lay2 <- lay %>% 
+  mutate(name = str_remove(customer, ",")) %>% 
+  select(name, population, lay_summary) %>% 
+  mutate(pops = str_split(population, pattern = "\n")) %>% 
+  select(name, lay_summary, pops) %>% 
+  unnest(pops) %>% 
+  mutate(population = clean_pop(pops))
+
+# we can select only the columns we need and then filter out the bad line breaks
+lay2 %>% 
+  select(population, name, lay_summary) %>% 
+  filter(population != "UNKNOWN_DESCRIPTION")
+
+# since we need product information in the lay summary we need to join the lay summary
+# info onto the order results summaries
+lay_summaries <- results_dfs %>% 
+  map(left_join, lay2) %>% 
+  map(select, name, institution, product, lay_summary) %>% 
+  map(arrange, name)
+
+# check
+lay_summaries[["AFRICAN ANCESTRY FROM BARBADOS IN THE CARIBBEAN"]]
+```
+
+## Write out xlsx files
+
+This function will serve as the scaffolding for writing to excel files
+
+```{r}
+library(lubridate)
+library(openxlsx)
+
+
+# remove the population column from the results dfs 
+results_dfs <- map(results_dfs, select, -population)
+
+# ------------------------------------------------------------------------------
+# create a table style for the excel sheets
+hs <- createStyle(fgFill = "#DCE6F2",
+                  halign = "left", 
+                  valign = "center", 
+                  textDecoration = "Bold",
+                  border = "TopBottomLeftRight")
+
+title_style <- createStyle(fontName = "Calibri", 
+                           fontSize = 14, 
+                           halign = "center", 
+                           valign = "center")
+
+# function for creating excel sheets
+create_excel <- function(report_df, lay_df, title, from_date, to_date, filename) {
+  
+  DATE1 <- ymd(from_date)
+  DATE2 <- ymd(to_date)
+  
+  wb <- createWorkbook()
+  addWorksheet(wb, sheetName = "Research Intent")
+  addWorksheet(wb, sheetName = "Lay Summaries")
+  setRowHeights(wb, sheet = 1, rows = 1, heights = 65)
+  writeData(wb, 
+            sheet = 1, 
+            x = paste0("NHGRI Sample Repository for Human Genetic Research Community Report\nCovering ", 
+                       month(DATE1, label = TRUE, abbr = FALSE), ", ", day(DATE1), " ", year(DATE1),
+                       " through ", 
+                       month(DATE2, label = TRUE, abbr = FALSE), ", ", day(DATE2), " ", year(DATE2), 
+                       "\n", 
+                       title), 
+            startCol = 1, 
+            startRow = 1)
+  addStyle(wb, sheet = 1, style = title_style, cols = 1, rows = 1)
+  mergeCells(wb, sheet = 1, cols = 1:6, rows = 1)
+  setColWidths(wb, sheet = 1, cols = 1:6, widths = 20)
+  setColWidths(wb, sheet = 2, cols = 1:4,  widths = "auto")
+  writeData(wb, sheet = 1, x = report_df, headerStyle = hs, startRow = 3, borders = "all")
+  writeData(wb, sheet = 2, x = lay_df, headerStyle = hs, startRow = 1, borders = "all")
+  saveWorkbook(wb, file = filename, overwrite = TRUE)
+}
+
+# test function ----------------------------------------------------------------
+# simulate user input date range
+D1 <- "2020-11-01"
+D2 <- "2021-01-31"
+
+create_excel(report_df = results_dfs[[1]], 
+             lay_df = lay_summaries[[1]], 
+             title = names(results_dfs)[1],
+             from_date = D1,
+             to_date = D2,
+             filename = file.path(here("results"), paste0(names(results_dfs)[1], ".xlsx")))
+```
+
+
+
+
+
+
+
