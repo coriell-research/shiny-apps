@@ -1,12 +1,18 @@
 library(shiny)
 library(shinythemes)
-library(tidyverse)
-library(readxl)
-library(lubridate)
-library(openxlsx)
-
 source("helpers.R")
-ssrs_cols <- readRDS("data/ssrs-cols.rds")
+
+# required columns for reading in data
+ssrs_required <- c("Collection_Type_id", "Ref", "Exp", "Product", "From_Product", 
+                   "Quantity_in_Container", "Quantity", "Quantity2", "Order_Date", 
+                   "Order_Id", "Ship_Date", "Order_Type", "DiagDesc", "RIntentType", 
+                   "RIntent", "Name", "Customer_Id", "Institution", "Institution_Type", 
+                   "Country", "Order_Remark", "Invoice_Item_Price", "Queue_Price_11", 
+                   "Queue_Price_21", "Queue_Price_31", "Invoice_Amt", "Price_Adjustment", 
+                   "Ship_Charge", "Special_Handling_Charge", "Prepayment_Amt", "Invoice_Paid_Amt")
+
+lay_required <- c("Lay_Summary1", "Customer", "Country", "Institution_Name", 
+                  "Population", "Collection", "Addtl_Info")
 
 
 # Define UI for application ----------------------------------------------------
@@ -16,18 +22,18 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       h3("Step 1:"),
-      p("Upload the unprocessed NHGRI Shipping History Detail .xlsx file."),
+      p("Upload the unprocessed NHGRI Shipping History Detail .csv file."),
       fileInput("ssrs",
-        label = "Upload SSRS .xlsx file",
-        accept = c(".xlsx", ".xls")
+        label = "Upload 'Shipping History' .csv file",
+        accept = c(".csv")
       ),
       tags$style(type = 'text/css', '#ssrs_messages {color: red; border-style: none;}'),
       p(textOutput("ssrs_messages")),
       h3("Step 2:"),
-      p("Upload the lay summary .xlsx file."),
+      p("Upload the 'Lay Summary' .csv file."),
       fileInput("lay",
-        label = "Upload lay summary .xlsx file",
-        accept = c(".xlsx", "xls")
+        label = "Upload 'Lay Summary' .csv file",
+        accept = c(".csv")
       ),
       tags$style(type = 'text/css', '#lay_messages {color: red; border-style: none;}'),
       p(textOutput("lay_messages")),
@@ -72,46 +78,43 @@ ui <- fluidPage(
 server <- function(input, output, session) {
     ssrs <- reactive({
         req(input$ssrs)
-        df <- read_excel(input$ssrs$datapath, skip = 1) %>% janitor::clean_names()
+        dt <- readInput(input$ssrs$datapath, skip_rows = 0)
         
         validate(
-            need(identical(colnames(df), ssrs_cols), "Error: Input columns do not match expected columns.")
+            need(identical(colnames(dt), ssrs_required), "Error: Input columns do not match expected columns.")
         )
         
-        df
+        dt
     })
     
-    # If the output is not an error don;t render anything
-    output$ssrs_messages <- renderText( {if (is_tibble(ssrs())) cat("") else ssrs()} )
+    # If the output is not an error don't render anything
+    output$ssrs_messages <- renderText( {if (is.data.table(ssrs())) cat("") else ssrs()} )
     
     lay <- reactive({
         req(input$lay)
-        required_cols <- c("lay_summary", "customer", "population")
-        df <- read_excel(input$lay$datapath) %>% janitor::clean_names()
+        dt <- readInput(input$lay$datapath, skip_rows = 3)
         
         validate(
-            need(all(required_cols %in% colnames(df)), "Error: Missing a required column (either Lay Summary, Customer, or Population) in the input csv file.")
+            need(identical(colnames(dt), lay_required), "Error: Missing a required column (either Lay Summary, Customer, or Population) in the input csv file.")
         )
         
-        df
+        dt
     })
     
-    # If the output is not an error don;t render anything
-    output$lay_messages <- renderText( {if (is_tibble(lay())) cat("") else lay()} )
+    # If the output is not an error don't render anything
+    output$lay_messages <- renderText( {if (is.data.table(lay())) cat("") else lay()} )
     
   observeEvent(input$run, {
-    report_dfs <- clean_and_split_ssrs(ssrs())
-    lay_unnested <- clean_and_unnest_lay(lay())
-    lay_dfs <- join_lay_onto_reports(report_dfs, lay_unnested)
+    report_dfs <- cleanGroupSplitSSRS(ssrs())
+    lay_unnested <- cleanAndUnestLay(lay())
+    lay_dfs <- joinLayOntoSSRS(report_dfs, lay_unnested)
 
-    # drop population column from report dfs after joins
-    report_dfs <- report_dfs %>%
-      map(select, -Population) %>%
-      map(arrange, Investigator)
+    # drop population column from report dfs after joins and reorder
+    report_dfs <- lapply(report_dfs, function(dt) {dt[, Population := NULL][order(Investigator)]})
 
     # split the Investigator column into first last for both sets of data frames
-    report_dfs <- split_investigator(report_dfs)
-    lay_dfs <- split_investigator(lay_dfs)
+    report_dfs <- lapply(report_dfs, splitInvestigator)
+    lay_dfs <- lapply(lay_dfs, splitInvestigator)
 
     # after processing, update preview choices
     updateSelectInput(session, "dataset", choices = c("Research Intent", "Lay Summary"))
@@ -128,7 +131,7 @@ server <- function(input, output, session) {
     output$preview <- DT::renderDataTable(d())
     
     output$processing_messages <- renderText({
-      msgs <- check_processing(report_dfs, lay_dfs)
+      msgs <- checkProcessing(report_dfs, lay_dfs)
       paste(msgs, collapse = "\n")
       })
 
