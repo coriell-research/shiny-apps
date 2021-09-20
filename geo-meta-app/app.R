@@ -111,35 +111,6 @@ ui <- fluidPage(
         label = "Use Complete Cases",
         value = FALSE
       ),
-      h4("Meta-Analysis Params:"),
-      numericInput(
-        "meta_pVal",
-        label = "FDR threshold",
-        min = 0,
-        max = 1,
-        value = 0.1,
-        step = 0.1),
-      numericInput(
-        "meta_fc",
-        label = "FC Threshold",
-        min = 0,
-        max = 100,
-        step = 1,
-        value = 2
-      ),
-      numericInput(
-        "meta_thresh",
-        label = "Meta Threshold",
-        min = 0.01,
-        max = 1,
-        value = 0.01,
-        step = 0.01
-      ),
-      checkboxInput(
-        "meta_collapse",
-        label = "Collapse DE?",
-        value = FALSE 
-      ),
       actionBttn("run",
         label = "Run"
       )
@@ -216,12 +187,53 @@ ui <- fluidPage(
           DT::dataTableOutput("features")
         ),
         tabPanel(
-          "Meta-Volcano",
+          "Meta-Vote",
+          numericInput("metav_lfc",
+                       label = "LogFC cutoff",
+                       value = 0,
+                       min = 0,
+                       max = 25),
+          numericInput("metav_pval",
+                       label = "FDR cutoff",
+                       value = 0.1,
+                       min = 0,
+                       max = 1),
+          numericInput("metav_prop",
+                       label = "Proportion of experiments gene is DE",
+                       value = 0.1,
+                       min = 0,
+                       max = 1),
+          checkboxInput("metav_common",
+                        label = "Use only genes common to all experiments",
+                        value = FALSE),
           plotlyOutput("metavolcano"),
         ),
         tabPanel(
-          "Meta-Barplot",
-          plotOutput("metabarplot")
+          "Meta-Pcombine",
+          selectInput("metap_method",
+                      label = "P-value combination method",
+                      choices = c("fisher", "pearson", "tippet", "wilkinson"),
+                      selected = "fisher",
+                      multiple = FALSE),
+          selectInput("metap_fun",
+                      label = "Function to combine logFC values",
+                      choices = c("mean", "median", "max", "min"),
+                      selected = "mean",
+                      multiple = FALSE),
+          checkboxInput("metap_common",
+                        label = "Use only genes common to all experiments",
+                        value = FALSE),
+          plotlyOutput("metap_volcano"),
+          numericInput("metap_fdr",
+                       label = "FDR cutoff",
+                       value = 0.05,
+                       min = 0,
+                       max = 1),
+          numericInput("metap_lfc",
+                       label = "LogFC cutoff",
+                       value = 0,
+                       min = 0,
+                       max = 100)
         )
       )
     )
@@ -364,32 +376,43 @@ server <- function(input, output, session) {
   # Differential expression data
   output$features <- DT::renderDataTable({res_dt[feature_id %chin% input$features]})
   
-  # Meta-Analysis
-  meta_analysis <- reactive({
-    votecount_mv(diffexp = data()[["dge_list"]],
-                 pcriteria = "FDR",
-                 foldchangecol = "logFC",
-                 genenamecol = "feature_id",
-                 geneidcol = "feature_id",
-                 pvalue = input$meta_pVal,
-                 foldchange = input$meta_fc, 
-                 metathr = input$meta_thresh,
-                 collaps = input$meta_collapse,
-                 jobname = "MetaVolcano", 
-                 outputfolder = tempdir(),
-                 draw = "HTML")
+  # Meta-Analysis vote counting
+  meta_votecount <- reactive({
+    meta_vote(
+      exp_list = data()[["dge_list"]],
+      lfc = input$metav_lfc,
+      pval = input$metav_pval,
+      meta_prop = input$metav_prop,
+      all_common = input$metav_common
+      )
   })
   
-  # meta-volcano plot
+  meta_pcomb <- reactive({
+    LFC_FUN  <-  switch(input$metap_fun,
+                        mean = mean,
+                        median = median,
+                        max = max,
+                        min = min)
+    meta_pcombine(
+      exp_list = data()[["dge_list"]],
+      method = input$metap_method,
+      lfc_fun = LFC_FUN,
+      all_common = input$metap_common,
+      na.rm = TRUE
+    )
+  })
+  
+  # meta-volcano (vote) plot
   output$metavolcano <- renderPlotly({
-    ggplotly(meta_analysis()@MetaVolcano)
+    ggplotly(plot_metavolcano(meta_votecount()))
   })
   
-  # meta-counts barplot
-  output$metabarplot <- renderPlot({
-    meta_analysis()@degfreq
+  # meta-volcano pcombine plot
+  output$metap_volcano <- renderPlotly({
+    ggplotly(
+      plot_volcano(df = meta_pcomb(), x = meta_lfc, y = meta_p, fdr = input$metap_fdr, lfc = input$metap_lfc)
+    )
   })
-  
 }
 
 # Run the application
