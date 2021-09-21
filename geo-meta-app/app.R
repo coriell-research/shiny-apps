@@ -8,7 +8,6 @@ library(PCAtools)
 library(magrittr)
 library(patchwork)
 library(coriell)
-library(MetaVolcanoR)
 
 
 dge_se <- readRDS(here("data", "dge_se.rds"))
