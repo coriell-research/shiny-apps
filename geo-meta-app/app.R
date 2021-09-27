@@ -31,7 +31,7 @@ ui <- fluidPage(
       ),
       radioButtons("data",
         label = "Data",
-        choices = c("Log2FC" = "lfc", "FDR" = "fdr", "Rank" = "rank"),
+        choices = c("Log2FC" = "lfc"),
         selected = "lfc"
       ),
       pickerInput("contrasts",
@@ -116,6 +116,8 @@ ui <- fluidPage(
     ),
     mainPanel(
       tabsetPanel(
+        tabPanel("About",
+                 includeMarkdown(here("doc", "about.md"))),
         tabPanel(
           "PCA Biplot",
           selectInput("col",
