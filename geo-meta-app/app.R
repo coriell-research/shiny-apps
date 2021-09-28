@@ -154,12 +154,15 @@ ui <- fluidPage(
         ),
         tabPanel(
           "Diff Exp.",
-          pickerInput("patch_con",
+          pickerInput("patch_exp",
+                      label = "Experiments",
+                      choices = sort(unique(colData(dge_se)$experiment)),
+                      selected = "PRJNA413957",
+                      multiple = FALSE),
+          selectInput("patch_con",
                       label = "Contrasts",
-                      choices = sort(unique(colData(dge_se)$contrast)),
-                      selected = "HH1.25uM_vs_DMSO_96hr",
-                      multiple = FALSE
-          ),
+                      choices = NULL,
+                      multiple = FALSE),
           numericInput("patch_fdr",
                        label = "FDR cutoff",
                        value = 0.1,
@@ -359,13 +362,27 @@ server <- function(input, output, session) {
   })
   
   # Differential expression plots
+  observe({ 
+    d <- dge_res
+    if (input$dataset == "Repetitive Elements") {
+      d <- dre_res
+    }
+    cons <- unique(d[experiment == input$patch_exp, contrast])
+    updateSelectInput(session, 
+                      "patch_con",
+                      label = NULL,
+                      choices = cons,
+                      selected = NULL)
+  })
+  
   output$patch <- renderPlot({
     d <- dge_res
     if (input$dataset == "Repetitive Elements") {
       d <- dre_res
     }
     
-    data <- d[contrast == input$patch_con]
+    # filter the selected data and create the plot
+    data <- d[contrast == input$patch_con & experiment == input$patch_exp]
     vol <- plot_volcano(data, fdr = input$patch_fdr, lfc = log2(input$patch_fc))
     md <- plot_md(data, fdr = input$patch_fdr, lfc = log2(input$patch_fc))
     (vol | md)
