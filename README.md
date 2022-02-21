@@ -2,7 +2,11 @@
 
 A single repo for all of the shiny apps.
 
-## geo-meta-app
+## meta-app
+
+New version of the meta-analysis app. Faster and with a less bloated ui 
+
+## geo-meta-app (old)
 
 Exploring the meta-analysis results from the geo RNA-seq project.
 
