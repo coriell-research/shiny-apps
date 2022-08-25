@@ -5,10 +5,12 @@ library(PCAtools)
 library(BiocSingular)
 library(dplyr)
 library(pool)
+library(DT)
 
 
 # global data
 se <- readRDS("data/se.rds")
+pathways <- readRDS("data/pathways.rds")
 dge_se <- se[rowData(se)$feature_type == "gene", ]
 dre_se <- se[rowData(se)$feature_type == "re", ]
 
@@ -22,7 +24,7 @@ pool <- dbPool(
 server <- function(input, output, session) {
   data <- eventReactive(input$run, {
     showModal(modalDialog("Processing data. Please wait...", footer = NULL))
-
+    
     # Specify SummarizedExperiment dataset
     if (input$dataset == "Protein Coding Genes") {
       se <- dge_se
@@ -38,33 +40,50 @@ server <- function(input, output, session) {
       se$tissue %chin% input$tissues &
       se$disease %chin% input$diseases &
       se$epigenetic_class %chin% input$epigenetic]
+    
+    # If a gene set is selected subset the SE object
+    if (input$pathway != "ALL GENES") {
+      if (input$dataset == "Protein Coding Genes") {
+        se_filtered <- se_filtered[rownames(se_filtered) %chin% pathways[[input$pathway]], ]
+      }
+    }
 
     # Extract matrix of user specified assay
     M <- assay(se_filtered, input$data)
 
     # Filter matrix if complete cases is specified
     if (input$complete) {
-      val <- switch(input$data,
-        lfc = 0L,
-        fdr = 1L,
-      )
-      M[M == val] <- NA
       M <- na.omit(M)
     }
 
-    # Perform PCA on the matrix
+    # Perform PCA
+    algo <- switch (input$algorithm,
+      "Exact" = ExactParam(), 
+      "Irlba" = IrlbaParam(), 
+      "Random" = RandomParam(), 
+      "Auto" = FastAutoParam()
+    )
+    
+    # Replace NA values with imputed values
+    replace_val <- switch (input$data,
+      "lfc" = 0L,
+      "fdr" = 1L
+    )
+    M[is.na(M)] <- replace_val
+    
+    # Run PCA
     pca_res <- pca(
       mat = M,
       metadata = as.data.frame(colData(se_filtered)),
       scale = input$scale,
       center = input$center,
       removeVar = input$var,
-      rank = 30,
-      BSPARAM = FastAutoParam()
+      rank = input$components,
+      BSPARAM = algo
     )
 
     removeModal()
-    list("PCA" = pca_res, ids = colnames(M), features = rownames(M))
+    list("PCA" = pca_res, "ids" = colnames(M), "features" = rownames(M), "se" = se_filtered)
   })
 
   # Create single reactive data.table for use in plotting functions
@@ -92,8 +111,8 @@ server <- function(input, output, session) {
         "<br>Time", dt$time_hr,
         "<br>Epigenetic Class", dt$epigenetic_class
       )
-    ) %>%
-      add_markers(size = 180) %>%
+    ) |>
+      add_markers(size = 180) |>
       layout(
         dragmode = "lasso",
         showlegend = FALSE,
@@ -134,13 +153,15 @@ server <- function(input, output, session) {
     fdr <- assay(keep_se, "fdr")
 
     # Calculate significance and direction based on both input matrices
-    fdr_mat <- ifelse(fdr < input$meta_pval, 1L, 0L)
-    lfc_mat <- matrix(data.table::fcase(lfc > 0 & abs(lfc) > input$meta_lfc, 1L,
-      lfc < 0 & abs(lfc) > input$meta_lfc, -1L,
-      default = 0L
-    ),
-    nrow = nrow(keep_se)
-    )
+    fdr_mat <- fdr < input$meta_pval
+    lfc_mat <- matrix(
+      data.table::fcase(
+        lfc > 0 & abs(lfc) > input$meta_lfc, 1L,
+        lfc < 0 & abs(lfc) > input$meta_lfc, -1L,
+        default = 0L),
+      nrow = nrow(keep_se)
+      )
+    
     exp_mat <- fdr_mat * lfc_mat
 
     # Calculate voting stats
@@ -167,9 +188,7 @@ server <- function(input, output, session) {
   })
 
   # Meta-Vote MetaVolcano plot
-  output$metavolcano <- renderPlotly({
-    plotly::ggplotly(coriell::plot_metavolcano(metavote_data()))
-  })
+  output$metavolcano <- renderPlot({ coriell::plot_metavolcano(metavote_data()) })
 
   # Meta-Vote Count Table
   output$metatable <- DT::renderDT({
@@ -179,30 +198,71 @@ server <- function(input, output, session) {
   # Differential Expression data
   d <- reactive({
     if (input$type == "both") {
-      data <- pool %>% 
-        tbl("results") %>% 
-        filter(id == !!input$id) %>% 
+      data <- pool |> 
+        tbl("results") |> 
+        filter(id == !!input$id) |> 
         collect()
     } else {
-      data <- pool %>% 
-        tbl("results") %>% 
-        filter(id == !!input$id & feature_type == !!input$type) %>% 
+      data <- pool |> 
+        tbl("results") |> 
+        filter(id == !!input$id & feature_type == !!input$type) |> 
         collect()
     }
     return(data)
   })
   
   # Differential Expression volcano plot
-  output$volcano <- renderPlotly({ ggplotly(coriell::plot_volcano(d(), fdr = input$fdr, annotate_counts = FALSE)) })
+  output$volcano <- renderPlot({ coriell::plot_volcano(d(), fdr = input$fdr, annotate_counts = FALSE) })
   
   # Differential Expression ma plot
-  output$ma <- renderPlotly({ ggplotly(coriell::plot_md(d(), x = expr, fdr = input$fdr, annotate_counts = FALSE)) })
+  output$ma <- renderPlot({ coriell::plot_md(d(), x = "expr", fdr = input$fdr, annotate_counts = FALSE) })
   
   # Differential Expression Summary table
-  output$de_tbl <- DT::renderDT({ coriell::summarize_dge(d(), fdr = input$fdr) })
+  output$de_tbl <- DT::renderDT({
+    df <- coriell::summarize_dge(d(), fdr = input$fdr)  
+    datatable(df) |> formatRound('Percent', 2)
+    })
+  
+  # Experiment Ranking
+  output$ranking <- DT::renderDT({
+    se <- data()[["se"]]
+    fdr <- assay(se, "fdr")
+    lfc <- assay(se, "lfc")
+    
+    up <- (lfc > 0) & (fdr <= input$ranking_fdr)
+    down <- (lfc < 0) & (fdr <= input$ranking_fdr)
+    non <- fdr > 0.05
+    
+    up_counts <- colSums(up, na.rm = TRUE)
+    down_counts <- colSums(down, na.rm = TRUE)
+    non_counts <- colSums(non, na.rm = TRUE)
+    
+    df <- data.frame(up = up_counts, down = down_counts, non = non_counts)
+    df <- cbind(df, colData(se)[, c("experiment", "cell_line", "drug", "dose", "time_hr", "epigenetic_class", "tissue", "disease")])
+    df <- df[order(df$up, decreasing = TRUE), ]
+    df
+  })
   
   # Metadata table
   output$metadata <- DT::renderDT({
-    pool %>% tbl("metadata") %>% collect()
+    df <- pool |> tbl("metadata") |> collect() |> dplyr::select(-id)
+    datatable(
+      df,
+      colnames = c("Cell Line", "Drug", "BioProject", "Contrast", "Dose",
+                   "Time (hr)", "Batch", "Mutation", "Comment", "Description",
+                   "Epigenetic Class", "Tissue", "Disease"),
+      options = list(columnDefs = list(list(
+        targets = 4,
+        render = JS(
+          "function(data, type, row, meta) {",
+          "return type === 'display' && data.length > 12 ?",
+          "'<span title=\"' + data + '\">' + data.substr(0, 12) + '...</span>' : data;",
+          "}")),
+        list(
+          targets = 10,
+          width = "50%"
+        ))),
+      callback = JS('table.page(3).draw(false);')
+      )
   })
 }
