@@ -212,7 +212,7 @@ server <- function(input, output, session) {
   })
   
   # Differential Expression volcano plot
-  output$volcano <- renderPlot({ coriell::plot_volcano(d(), fdr = input$fdr, annotate_counts = FALSE) })
+  output$volcano <- renderPlot({ coriell::plot_volcano(d(), fdr = input$fdr, down_color = "blue", annotate_counts = FALSE) })
   
   # Differential Expression ma plot
   output$ma <- renderPlot({ coriell::plot_md(d(), x = "expr", fdr = input$fdr, annotate_counts = FALSE) })
