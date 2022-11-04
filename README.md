@@ -25,3 +25,7 @@ Assist in the automated cleaning of NHGRI report files.
 ## norm-comparator
 
 Compare normalization methods in RNA-seq data.
+
+## methylation-simulator
+
+Simulate JSD and other methylation summary statistics
