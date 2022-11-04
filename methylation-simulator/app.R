@@ -22,7 +22,7 @@ simulateReads <- function(depth, n, probs, sparsity = 0) {
   # Simulate many reads and form into matrix
   reads <- replicate(depth, simulateRead(n, probs), simplify = FALSE)
   m <- do.call(rbind, reads)
-  m[sample(seq_along(m), sparsity * length(m))] <- NA
+  m[sample(seq_along(m), sparsity * length(m), replace = FALSE)] <- NA
   
   return(m)
 }
@@ -109,7 +109,7 @@ ui <- fluidPage(
       ),
       numericInput(
         "sparsity",
-        label = "Sparisty",
+        label = "Sparsity",
         value = 0,
         min = 0,
         max = 1,
