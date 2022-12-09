@@ -1,8 +1,8 @@
-library(shiny)
-library(shinythemes)
-library(shinyWidgets)
-library(SummarizedExperiment)
-library(plotly)
+suppressPackageStartupMessages(library(shiny))
+suppressPackageStartupMessages(library(shinythemes))
+suppressPackageStartupMessages(library(shinyWidgets))
+suppressPackageStartupMessages(library(SummarizedExperiment))
+suppressPackageStartupMessages(library(plotly))
 
 
 se <- readRDS("data/se.rds")
@@ -204,15 +204,36 @@ ui <- fluidPage(
           ),
           fluidRow(
             column(6, selectizeInput("id", label = "Contrast", choices = id_choices, multiple = FALSE, selected = NULL, width = "100%")),
-            column(3, pickerInput("type", label = "Feature Type", choices = c("gene", "re", "both"), multiple = FALSE, selected = "gene")),
+            column(3, pickerInput("type", label = "Feature Type", choices = c("Gene" = "gene", "RE" = "re", "Both" = "both"), multiple = FALSE, selected = "gene")),
             column(3, numericInput("fdr", label = "FDR Cutoff", value = 0.1, min = 0, max = 1, step = 0.1))
           ),
-          DT::dataTableOutput("de_tbl")
+          DT::dataTableOutput("de_tbl"),
+          downloadButton("downloadDE", "Download")
         ),
         tabPanel(
           "Expression Ranking",
           numericInput("ranking_fdr", label = "FDR Cutoff", value = 0.1, min = 0, max = 1, step = 0.1),
-          DT::dataTableOutput("ranking")
+          DT::dataTableOutput("ranking"),
+          downloadButton("downloadData", "Download")
+        ),
+        tabPanel(
+          "GSEA",
+          fluidRow(
+            column(6, selectizeInput("gsea_id", label = "Contrast", choices = id_choices, multiple = FALSE, selected = sample(id_choices, 1), width = "100%")),
+            column(6, pickerInput("gsea_pathway", label = "Gene Set", choices = pathway_choices, selected = "HALLMARK_INTERFERON_ALPHA_RESPONSE", multiple = FALSE, list(`actions-box` = TRUE)))
+          ),
+          plotOutput("enrichment_plot"),
+          DT::dataTableOutput("gsea_results")
+        ),
+        tabPanel(
+          "UpSet",
+          fluidRow(
+            column(4, selectizeInput("upset_ids", label = "Contrast", choices = id_choices, multiple = TRUE, selected = sample(id_choices, 3), width = "100%")),
+            column(2, selectInput("upset_type", label = "Feature Type", choices = c("Gene" = "gene", "RE" = "re", "Both" = "both"), multiple = FALSE, selected = NULL, width = "100%")),
+            column(3, numericInput("upset_fdr", label = "FDR Cutoff", value = 0.1, min = 0, max = 1, step = 0.1)),
+            column(3, selectInput("upset_mode", label = "Mode", choices = c("Intersect" = "intersect", "Distinct" = "distinct", "Union" = "union"), selected = "intersect", multiple = FALSE))
+          ),
+          plotOutput("upset")
         ),
         tabPanel(
           "Metadata",

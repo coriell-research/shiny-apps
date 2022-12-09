@@ -1,11 +1,13 @@
-library(plotly)
-library(SummarizedExperiment)
-library(data.table)
-library(PCAtools)
-library(BiocSingular)
-library(dplyr)
-library(pool)
-library(DT)
+suppressPackageStartupMessages(library(plotly))
+suppressPackageStartupMessages(library(SummarizedExperiment))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(PCAtools))
+suppressPackageStartupMessages(library(BiocSingular))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(pool))
+suppressPackageStartupMessages(library(DT))
+suppressPackageStartupMessages(library(fgsea))
+suppressPackageStartupMessages(library(ComplexHeatmap))
 
 
 # global data
@@ -212,26 +214,35 @@ server <- function(input, output, session) {
   })
   
   # Differential Expression volcano plot
-  output$volcano <- renderPlot({ coriell::plot_volcano(d(), fdr = input$fdr, down_color = "blue", annotate_counts = FALSE) })
+  output$volcano <- renderPlot({ coriell::plot_volcano(d(), fdr = input$fdr, down_color = "blue", nonde_color = "grey40", annotate_counts = FALSE) })
   
   # Differential Expression ma plot
-  output$ma <- renderPlot({ coriell::plot_md(d(), x = "expr", fdr = input$fdr, annotate_counts = FALSE) })
+  output$ma <- renderPlot({ coriell::plot_md(d(), x = "expr", fdr = input$fdr, nonde_color = "grey40", annotate_counts = FALSE) })
   
   # Differential Expression Summary table
   output$de_tbl <- DT::renderDT({
     df <- coriell::summarize_dge(d(), fdr = input$fdr)  
     datatable(df) |> formatRound('Percent', 2)
-    })
+    }) 
+
+   output$downloadDE <- downloadHandler(
+    filename = function() {
+      paste("DifferentialExpression-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+    fwrite(as.data.frame(d()), file)
+    }
+  )
   
   # Experiment Ranking
-  output$ranking <- DT::renderDT({
+  ranking_dt <- reactive({
     se <- data()[["se"]]
     fdr <- assay(se, "fdr")
     lfc <- assay(se, "lfc")
     
     up <- (lfc > 0) & (fdr <= input$ranking_fdr)
     down <- (lfc < 0) & (fdr <= input$ranking_fdr)
-    non <- fdr > 0.05
+    non <- fdr > input$ranking_fdr
     
     up_counts <- colSums(up, na.rm = TRUE)
     down_counts <- colSums(down, na.rm = TRUE)
@@ -242,7 +253,88 @@ server <- function(input, output, session) {
     df <- df[order(df$up, decreasing = TRUE), ]
     df
   })
+
+  output$ranking <- DT::renderDT({ ranking_dt() })
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("ExpressionRanking-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      fwrite(ranking_dt(), file)
+    }
+  )
   
+  # GSEA
+  ranks <- reactive({
+    df <- pool |> 
+      tbl("results") |> 
+      filter(id == !!input$gsea_id & feature_type == "gene") |> 
+      collect()
+
+    ranks <- df$logFC * -1 * log10(df$PValue)
+    names(ranks) <- df$feature_id
+    ranks
+  })
+  
+  output$gsea_results <- DT::renderDT({
+    res <- fgsea(pathways = pathways[input$gsea_pathway],
+          stats    = ranks(),
+          eps      = 0.0,
+          minSize  = 10,
+          maxSize  = 500,
+          nPermSimple = 10000)
+    res[, leadingEdge := NULL]
+    datatable(res) |> formatRound(c('pval', 'padj', 'log2err', 'ES', 'NES'), digits = 2)
+  })
+  
+  output$enrichment_plot <- renderPlot({
+    plotEnrichment(pathways[[input$gsea_pathway]],
+                   ranks()) +
+      labs(title = input$gsea_pathway)
+  })
+  
+  # UpSet plot
+  upset_data <- reactive({
+    data <- if (input$upset_type == "both") {
+      data <- pool |> 
+        tbl("results") |> 
+        filter(id %in% !!input$upset_ids) |> 
+        collect()
+    } else {
+      data <- pool |> 
+        tbl("results") |> 
+        filter(id %in% !!input$upset_ids & feature_type == !!input$upset_type) |> 
+        collect()
+    }
+    return(data)
+  })
+  
+  output$upset <- renderPlot({
+    dt <- setDT(upset_data())
+    up <- dt[FDR < input$upset_fdr & logFC > 0]
+    down <- dt[FDR < input$upset_fdr & logFC < 0]
+    up_by_con <- split(up, by = "contrast")
+    down_by_con <- split(down, by = "contrast")
+    
+    names(up_by_con) <- gsub("PRJNA[0-9]+\\.", "", names(up_by_con))
+    names(up_by_con) <- gsub("PRJNA[0-9]+\\.", "", names(up_by_con))
+    names(up_by_con) <- paste(names(up_by_con), "up", sep = ".")
+    names(down_by_con) <- paste(names(down_by_con), "down", sep = ".")
+    
+    l_up <- lapply(up_by_con, function(x) unique(x$feature_id))
+    l_down <- lapply(down_by_con, function(x) unique(x$feature_id))
+    l <- c(l_up, l_down)
+    m <- make_comb_mat(list_to_matrix(l), mode = input$upset_mode)
+    m <- m[comb_degree(m) == 2]
+    
+    hm <- UpSet(m, 
+      comb_order = order(comb_size(m), decreasing = TRUE), 
+      top_annotation = upset_top_annotation(m, add_numbers = TRUE, numbers_gp = grid::gpar(fontsize = 16)),
+      right_annotation = upset_right_annotation(m, add_numbers = TRUE, numbers_gp = grid::gpar(fontsize = 16))
+      )
+    draw(hm, padding = unit(c(12, 12, 12, 12), "mm"))
+  })
+
   # Metadata table
   output$metadata <- DT::renderDT({
     df <- pool |> tbl("metadata") |> collect() |> dplyr::select(-id)
