@@ -30,6 +30,10 @@ Compare normalization methods in RNA-seq data.
 
 Simulate JSD and other methylation summary statistics
 
-## Clonal expansion
+## clonal expansion
 
 Smulate population-level changes in methylation
+
+## t-test power simulation
+
+Simulate t-tests for methylation values. Used to estimate power and sample sizes for the most simple case of a two sample t-test.
