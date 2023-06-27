@@ -18,10 +18,6 @@ Exploring the per-sample expression data from the geo RNA-seq project.
 
 The Coriell GEUVADIS expression browser.
 
-## nhgri-app
-
-Assist in the automated cleaning of NHGRI report files.
-
 ## norm-comparator
 
 Compare normalization methods in RNA-seq data.
