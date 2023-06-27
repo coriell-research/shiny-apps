@@ -37,3 +37,7 @@ Smulate population-level changes in methylation
 ## t-test power simulation
 
 Simulate t-tests for methylation values. Used to estimate power and sample sizes for the most simple case of a two sample t-test.
+
+## inverse regression
+
+An app to simulate regression and applying inverse regression on methylation aging data
