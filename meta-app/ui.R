@@ -91,12 +91,12 @@ ui <- fluidPage(
         width = "100%"
       ),
       pickerInput("pathway",
-                  label = "Gene Set",
-                  choices = pathway_choices,
-                  selected = "ALL GENES",
-                  multiple = FALSE,
-                  options = list(`actions-box` = TRUE),
-                  width = "100%"
+        label = "Gene Set",
+        choices = pathway_choices,
+        selected = "ALL GENES",
+        multiple = FALSE,
+        options = list(`actions-box` = TRUE),
+        width = "100%"
       ),
       h4("PCA Params:"),
       numericInput("var",
@@ -107,18 +107,18 @@ ui <- fluidPage(
         step = 0.05
       ),
       numericInput("components",
-                   label = "Components",
-                   value = 10,
-                   min = 2,
-                   max = 100
+        label = "Components",
+        value = 10,
+        min = 2,
+        max = 100
       ),
       pickerInput("algorithm",
-                  label = "Algorithm",
-                  choices = c("Exact", "Irlba", "Random", "Auto"),
-                  selected = "Auto",
-                  multiple = FALSE,
-                  options = list(`actions-box` = TRUE),
-                  width = "100%"
+        label = "Algorithm",
+        choices = c("Exact", "Irlba", "Random", "Auto"),
+        selected = "Auto",
+        multiple = FALSE,
+        options = list(`actions-box` = TRUE),
+        width = "100%"
       ),
       checkboxInput("scale",
         label = "Scale Data",
@@ -194,7 +194,8 @@ ui <- fluidPage(
             )
           ),
           plotOutput("metavolcano"),
-          DT::dataTableOutput("metatable")
+          DT::dataTableOutput("metatable"),
+          downloadButton("downloadMetaVote", "Download")
         ),
         tabPanel(
           "Differential Expression",
@@ -208,7 +209,8 @@ ui <- fluidPage(
             column(3, numericInput("fdr", label = "FDR Cutoff", value = 0.1, min = 0, max = 1, step = 0.1))
           ),
           DT::dataTableOutput("de_tbl"),
-          downloadButton("downloadDE", "Download")
+          downloadButton("downloadDE", "Download Table"),
+          downloadButton("downloadDEPlots", "Download Plots")
         ),
         tabPanel(
           "Expression Ranking",
@@ -219,8 +221,9 @@ ui <- fluidPage(
         tabPanel(
           "GSEA",
           fluidRow(
-            column(6, selectizeInput("gsea_id", label = "Contrast", choices = id_choices, multiple = FALSE, selected = sample(id_choices, 1), width = "100%")),
-            column(6, pickerInput("gsea_pathway", label = "Gene Set", choices = pathway_choices, selected = "HALLMARK_INTERFERON_ALPHA_RESPONSE", multiple = FALSE, list(`actions-box` = TRUE)))
+            column(5, selectizeInput("gsea_id", label = "Contrast", choices = id_choices, multiple = FALSE, selected = sample(id_choices, 1), width = "100%")),
+            column(5, pickerInput("gsea_pathway", label = "Gene Set", choices = pathway_choices, selected = "HALLMARK_INTERFERON_ALPHA_RESPONSE", multiple = FALSE, list(`actions-box` = TRUE))),
+            column(2, numericInput("gsea_nPerm", label = "Permutations", value = 1e4, min = 1e2, max = 1e6, step = 1e3))
           ),
           plotOutput("enrichment_plot"),
           DT::dataTableOutput("gsea_results")
@@ -228,7 +231,7 @@ ui <- fluidPage(
         tabPanel(
           "UpSet",
           fluidRow(
-            column(4, selectizeInput("upset_ids", label = "Contrast", choices = id_choices, multiple = TRUE, selected = sample(id_choices, 3), width = "100%")),
+            column(4, selectizeInput("upset_ids", label = "Contrast", choices = id_choices, multiple = TRUE, selected = c("PRJNA413957.YB5.HH1.10uM_vs_DMSO_96hr", "PRJNA0000001.BSJ_vs_DMSO.48hr", "PRJNA0000002.BSJ_vs_DMSO.48hr"), width = "100%")),
             column(2, selectInput("upset_type", label = "Feature Type", choices = c("Gene" = "gene", "RE" = "re", "Both" = "both"), multiple = FALSE, selected = NULL, width = "100%")),
             column(3, numericInput("upset_fdr", label = "FDR Cutoff", value = 0.1, min = 0, max = 1, step = 0.1)),
             column(3, selectInput("upset_mode", label = "Mode", choices = c("Intersect" = "intersect", "Distinct" = "distinct", "Union" = "union"), selected = "intersect", multiple = FALSE))
