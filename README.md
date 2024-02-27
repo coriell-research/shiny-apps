@@ -18,6 +18,10 @@ Exploring the per-sample expression data from the geo RNA-seq project.
 
 The Coriell GEUVADIS expression browser.
 
+## inverse regression
+
+An app to simulate regression and applying inverse regression on methylation aging data
+
 ## norm-comparator
 
 Compare normalization methods in RNA-seq data.
@@ -38,6 +42,7 @@ Smulate population-level changes in methylation
 
 Simulate t-tests for methylation values. Used to estimate power and sample sizes for the most simple case of a two sample t-test.
 
-## inverse regression
+## tcga-pancan
 
-An app to simulate regression and applying inverse regression on methylation aging data
+An app to explore TCGA PanCancer data similar to CCLE data explorer. 
+
