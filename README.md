@@ -26,6 +26,10 @@ Compare normalization methods in RNA-seq data.
 
 Simulate JSD and other methylation summary statistics
 
+## methylation-simulation
+
+A poorly named app that simulates linear changes in methylation as a function of age and produces allele level data
+
 ## clonal expansion
 
 Smulate population-level changes in methylation
