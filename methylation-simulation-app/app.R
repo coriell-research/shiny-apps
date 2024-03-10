@@ -2,18 +2,30 @@ library(shiny)
 library(shinyWidgets)
 library(data.table)
 library(ggplot2)
+library(Rcpp)
 
 
 # Function to count number of methylated loci per 4-mer (default)
-patternCount <- function(x, k = 4) {
-  counts <- vector("integer", length = k + 1)
-  for (i in 1:(length(x) - k + 1)) {
-    j <- i + k - 1
-    count <- sum(x[i:j])
-    counts[count + 1] <- counts[count + 1] + 1L
+cppFunction("
+  NumericVector patternCount(IntegerVector x, int k = 4) {
+    IntegerVector counts(k+1);
+    NumericVector props(k+1);
+    
+    // Accumulate k-mer counts
+    for (int i = 0; i <= x.size() - k; i++) {
+      int idx = sum(x[Rcpp::Range(i, i+k-1)]);
+      counts[idx] += 1;
+    }
+    
+    // Convert counts to proportions
+    double total = sum(counts);
+    for (int i = 0; i <= k; i++) {
+      props[i] = counts[i] / total;
+    }
+
+    return props;
   }
-  counts / sum(counts)
-}
+")
 
 
 # UI ------------------------------------------------------------------------------------------
