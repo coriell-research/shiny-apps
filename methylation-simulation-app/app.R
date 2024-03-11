@@ -41,7 +41,7 @@ ui <- fluidPage(
         Ages are fixed from 0-100. The parameters below are used to
         generate expected percent methylation values as a function of
         age. These percentage methylation values are then used to
-        generate allele-level data by drawing random samples
+        generate CpG-level data by drawing random samples
         from a binomial distribution with p = expected percent
         methylation for each of the random replicates."),
       numericInput(
@@ -101,22 +101,24 @@ ui <- fluidPage(
       ),
       p("Number of samples to simulate at each age"),
       numericInput(
-        "nallele",
-        "N Alleles",
+        "nloci",
+        "N CpG Loci",
         value = 100,
         min = 2,
         max = Inf
       ),
-      p("Number of alleles to simulate for each sample"),
+      p("Number of CpG loci to simulate for each sample."),
       h2("JSD Reference"),
       p("Select the proportion of methylated CpGs used as a reference for JSD calculation. 
-        Proportions must sum to 1"),
+        Proportions must sum to 1. A sliding window of 4 CpGs is used for all JSD 
+        calculations. 'Prop. 0' represents the proportion of windows with zero methylated
+        CpGs, for example."),
       fluidRow(
-        column(2, numericInput("p0", "p0", value = 0.2, min = 0, max = 1, step = 0.1)),
-        column(2, numericInput("p1", "p0", value = 0.2, min = 0, max = 1, step = 0.1)),
-        column(2, numericInput("p2", "p0", value = 0.2, min = 0, max = 1, step = 0.1)),
-        column(2, numericInput("p3", "p0", value = 0.2, min = 0, max = 1, step = 0.1)),
-        column(2, numericInput("p4", "p0", value = 0.2, min = 0, max = 1, step = 0.1)),
+        column(2, numericInput("p0", "Prop. 0", value = 0.2, min = 0, max = 1, step = 0.1)),
+        column(2, numericInput("p1", "Prop. 1", value = 0.2, min = 0, max = 1, step = 0.1)),
+        column(2, numericInput("p2", "Prop. 2", value = 0.2, min = 0, max = 1, step = 0.1)),
+        column(2, numericInput("p3", "Prop. 3", value = 0.2, min = 0, max = 1, step = 0.1)),
+        column(2, numericInput("p4", "Prop. 4", value = 0.2, min = 0, max = 1, step = 0.1)),
       ),
       h2("Generate Data"),
       p("Use the button below to generate data from the specified model.
@@ -133,7 +135,7 @@ ui <- fluidPage(
       selectInput(
         "yaxis",
         "y-axis variable",
-        choices = c("Avg. Methylation" = "AvgMeth", "JSD" = "JSD", "Residuals" = "Residual"),
+        choices = c("Avg. Methylation" = "AvgMeth", "JSD" = "JSD", "Errors" = "Error"),
         selected = "Avg. Methylation"
       )
     )
@@ -204,7 +206,7 @@ server <- function(input, output) {
         caption = paste(
           "Random Seed:", input$seed,
           "; Replicates:", input$nrep,
-          "; N Alleles:", input$nallele
+          "; N CpG:", input$nloci
         )
       ) +
       theme_light() +
@@ -226,14 +228,14 @@ server <- function(input, output) {
 
     # Random allele generation
     p <- simdata()[["Y"]] / 100
-    n <- input$nallele
+    n <- input$nloci
 
     isOne <- n == 1
-    shinyFeedback::feedbackDanger("nallele", isOne, "Please select at least 2 alleles")
+    shinyFeedback::feedbackDanger("nloci", isOne, "Please select at least 2 loci")
     req(!isOne, cancelOutput = TRUE)
 
     d <- t(sapply(p, \(x) rbinom(n, 1L, x)))
-    cnames <- paste0("Allele", 1:n)
+    cnames <- paste0("CpG", 1:n)
     colnames(d) <- cnames
     rownames(d) <- rep(0:100, input$nrep)
 
@@ -262,9 +264,9 @@ server <- function(input, output) {
 
     # Add a column for the expected methylation value from the linear fit
     E <- (input$slope * d$Age) + input$intercept
-    d[, ExpectedMeth := E][, Residual := AvgMeth - ExpectedMeth]
+    d[, ExpectedMeth := E][, Error := AvgMeth - ExpectedMeth]
 
-    setcolorder(d, c("Age", "AvgMeth", "JSD", "ExpectedMeth", "Residual"))
+    setcolorder(d, c("Age", "AvgMeth", "JSD", "ExpectedMeth", "Error"))
 
     closeSweetAlert()
     return(d)
@@ -278,9 +280,9 @@ server <- function(input, output) {
     if (input$yaxis == "JSD") {
       ylims <- c(0, 1)
       ylabel <- "JSD"
-    } else if (input$yaxis == "Residual") {
+    } else if (input$yaxis == "Error") {
       ylims = NULL
-      ylabel = "Residual"
+      ylabel = "Error"
     }
 
     ggplot(data(), aes(x = Age, y = .data[[input$yaxis]])) +
